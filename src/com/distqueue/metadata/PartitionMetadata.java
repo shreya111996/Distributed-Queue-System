@@ -3,25 +3,28 @@ package com.distqueue.metadata;
 import java.util.ArrayList;
 import java.util.List;
 
-import com.distqueue.broker.Broker;
-
 public class PartitionMetadata {
-    private Broker leader;
-    private final List<Broker> followers = new ArrayList<>();
+    private int leaderId;  // Store the leader by ID rather than Broker object
+    private final List<Integer> followerIds = new ArrayList<>(); // Store followers by their broker IDs
 
     public PartitionMetadata(int replicationFactor) {
+        // Optionally, initialize other replication-related fields
     }
 
-    public void setLeader(Broker broker) {
-        this.leader = broker;
+    public void setLeaderId(int leaderId) {
+        this.leaderId = leaderId;
     }
 
-    public Broker getLeader() {
-        return leader;
+    public int getLeaderId() {
+        return leaderId;
     }
 
-    public List<Broker> getFollowers() {
-        return followers;
+    public void addFollower(int followerId) {
+        followerIds.add(followerId);
+    }
+
+    public List<Integer> getFollowers() {
+        return new ArrayList<>(followerIds); // Return a copy to prevent external modification
     }
 }
 
