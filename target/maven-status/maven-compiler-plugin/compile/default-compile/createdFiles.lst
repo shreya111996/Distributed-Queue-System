@@ -1,0 +1,11 @@
+com/distqueue/core/Message.class
+com/distqueue/controller/Controller.class
+com/distqueue/producer/Producer.class
+com/distqueue/metadata/PartitionMetadata.class
+com/distqueue/broker/Broker.class
+com/distqueue/core/Topic.class
+com/distqueue/core/TopicManager.class
+com/distqueue/core/Partition.class
+com/distqueue/core/MessageQueue.class
+com/distqueue/MainClass.class
+com/distqueue/consumer/Consumer.class
