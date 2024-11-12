@@ -3,6 +3,7 @@ package com.distqueue.core;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import com.distqueue.broker.Broker;
 import com.distqueue.metadata.PartitionMetadata;
@@ -12,38 +13,63 @@ public class TopicManager {
     private final Map<String, Topic> topics = new HashMap<>();
     private final List<Broker> brokers;
 
-    // Constructor that accepts the list of brokers
     public TopicManager(List<Broker> brokers) {
         this.brokers = brokers;
     }
 
-    // Method to create a new topic with given number of partitions and replicas
     public void createTopic(String topicName, int numPartitions, int replicationFactor) {
+        if (topics.containsKey(topicName)) {
+            System.err.println("Topic already exists: " + topicName);
+            return;
+        }
+
         Topic topic = new Topic(topicName, numPartitions, replicationFactor);
         topics.put(topicName, topic);
 
-        // Here you might want to distribute partitions across brokers
-        // and handle replication using the brokers list.
-        // For example, assign leaders and replicas for each partition.
         for (int partition = 0; partition < numPartitions; partition++) {
             PartitionMetadata partitionMetadata = new PartitionMetadata(replicationFactor);
-            
-            // Simple logic: first broker as leader, next ones as followers up to replicationFactor
+
             if (!brokers.isEmpty()) {
-                partitionMetadata.setLeaderId(brokers.get(0).getId()); // Assign leader
+                int leaderId = brokers.get(partition % brokers.size()).getId();
+                partitionMetadata.setLeaderId(leaderId);
+
                 for (int i = 1; i < replicationFactor && i < brokers.size(); i++) {
-                    partitionMetadata.addFollower(brokers.get(i).getId());
+                    int followerId = brokers.get((partition + i) % brokers.size()).getId();
+                    partitionMetadata.addFollower(followerId);
                 }
             }
-            
-            // Add partition metadata to the topic or store it as needed
-            topic.addPartitionMetadata(partition, partitionMetadata);
+            topic.updatePartitionMetadata(partition, partitionMetadata);
         }
+
+        for (Broker broker : brokers) {
+            broker.addTopic(topic);
+        }
+
+        System.out.println("Topic " + topicName + " with " + numPartitions +
+                           " partitions and replication factor " + replicationFactor + " created and registered.");
+    }
+
+     // Method to retrieve metadata for all partitions of a given topic
+     public Map<Integer, PartitionMetadata> getTopicMetadata(String topicName) {
+        Topic topic = topics.get(topicName);
+        if (topic != null) {
+            Map<Integer, PartitionMetadata> partitionMetadataMap = new HashMap<>();
+            for (int partitionId = 0; partitionId < topic.getNumPartitions(); partitionId++) {
+                PartitionMetadata partitionMetadata = topic.getPartitionMetadata(partitionId);
+                partitionMetadataMap.put(partitionId, partitionMetadata);
+            }
+            return partitionMetadataMap;
+        }
+        return null;
     }
 
     public Topic getTopic(String topicName) {
         return topics.get(topicName);
     }
 
-
+    // Method to get all topic names
+    public Set<String> getTopicNames() {
+        return topics.keySet();
+    }
+    
 }
