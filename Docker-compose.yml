@@ -3,7 +3,7 @@ services:
     image: broker-image
     container_name: broker1
     ports:
-      - "8081:8080"  # Maps host port 8081 to container port 8080
+      - "8080:8080"  # Maps host port 8081 to container port 8080
     environment:
       - BROKER_ID=1  # Unique ID for each broker
       - BROKER_PORT=8080  # Internal port for the broker
@@ -12,16 +12,16 @@ services:
     image: broker-image
     container_name: broker2
     ports:
-      - "8082:8080"  # Maps host port 8082 to container port 8080
+      - "8081:8081"  # Maps host port 8082 to container port 8080
     environment:
       - BROKER_ID=2
-      - BROKER_PORT=8080
+      - BROKER_PORT=8081
 
   broker3:
     image: broker-image
     container_name: broker3
     ports:
-      - "8083:8080"  # Maps host port 8083 to container port 8080
+      - "8082:8082"  # Maps host port 8083 to container port 8080
     environment:
       - BROKER_ID=3
-      - BROKER_PORT=8080
+      - BROKER_PORT=8082

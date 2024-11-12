@@ -43,10 +43,6 @@ public class Topic {
         return partitionsMetadata.get(partitionId); // Return metadata for the partition
     }
 
-    public Map<Integer, PartitionMetadata> getPartitionsMetadata() {
-        return partitionsMetadata;
-    }
-
     // Method to assign leader and followers for a specific partition
     public void assignPartitionLeaderAndFollowers(int partitionId, int leaderId, List<Integer> followerIds) {
         PartitionMetadata metadata = partitionsMetadata.get(partitionId);
@@ -57,8 +53,12 @@ public class Topic {
     }
 
     // Method to add or update partition metadata
-    public void addPartitionMetadata(int partitionId, PartitionMetadata metadata) {
+    public void updatePartitionMetadata(int partitionId, PartitionMetadata metadata) {
         partitionsMetadata.put(partitionId, metadata);
+    }
+
+    public int getNumPartitions() {
+        return partitions.size();
     }
 
 }

@@ -10,15 +10,17 @@ import com.distqueue.core.TopicManager;
 import com.distqueue.producer.Producer;
 
 public class MainClass {
-    
-    public static void main(String[] args) throws InterruptedException {
 
+    public static void main(String[] args) throws InterruptedException {
 
         int numberOfNodes = 3; // for example
         List<Broker> brokers = new ArrayList<>();
 
+        // Initialize TopicManager with brokers
+        TopicManager topicManager = new TopicManager(brokers);
+
         // Initialize the Controller with the list of brokers for managing metadata
-        Controller controller = new Controller(brokers);
+        Controller controller = new Controller(brokers, topicManager);
 
         // Create brokers and register them with the controller
         for (int i = 0; i < numberOfNodes; i++) {
@@ -29,12 +31,14 @@ public class MainClass {
             new Thread(broker::start).start(); // Start each broker on a new thread
         }
 
-        // Initialize TopicManager with the brokers and create a topic
-        TopicManager topicManager = new TopicManager(brokers);
-        topicManager.createTopic("TestTopic", 3, 2); // 3 partitions, replication factor 2
+        // Small delay to ensure brokers are fully initialized
+        Thread.sleep(1000);
+
+        // Create a topic using the TopicManager
+        topicManager.createTopic("TestTopic", 3, 2);
 
         // Use the Controller to manage topic metadata and assign leaders/followers
-        controller.addTopicMetadata("TestTopic", 3, 2);
+        controller.loadTopicMetadata("TestTopic");
 
         // Simulate producer sending messages to the topic
         Producer producer = new Producer(brokers);
@@ -43,7 +47,7 @@ public class MainClass {
         // Simulate consumer consuming messages from the topic
         Consumer consumer = new Consumer(brokers, "TestTopic", "ConsumerGroup1");
         consumer.consume();
-    
+
     }
 
 }
