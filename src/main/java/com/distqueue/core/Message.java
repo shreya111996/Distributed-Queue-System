@@ -1,9 +1,11 @@
 package com.distqueue.core;
 
+import java.io.Serializable;
 import java.time.Instant;
 import java.util.UUID;
 
-public class Message {
+public class Message implements Serializable {
+    private static final long serialVersionUID = 1L;
     private final UUID messageId;
     private final byte[] payload;
     private final Instant timestamp;

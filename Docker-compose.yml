@@ -1,27 +1,99 @@
 services:
-  broker1:
-    image: broker-image
-    container_name: broker1
+  controller:
+    image: distqueue/controller
+    container_name: controller
     ports:
-      - "8080:8080"  # Maps host port 8081 to container port 8080
+      - "8090:8090"
     environment:
-      - BROKER_ID=1  # Unique ID for each broker
-      - BROKER_PORT=8080  # Internal port for the broker
+      - ROLE=controller
+      - PORT=8090
+    networks:
+      - distqueue-net
+
+  broker1:
+    image: distqueue/broker
+    container_name: broker1
+    environment:
+      - ROLE=broker
+      - BROKER_ID=1
+      - HOST=broker1
+      - PORT=8081
+      - CONTROLLER_HOST=controller
+      - CONTROLLER_PORT=8090
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://broker1:8081/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    depends_on:
+      - controller
+    networks:
+      - distqueue-net
 
   broker2:
-    image: broker-image
+    image: distqueue/broker
     container_name: broker2
-    ports:
-      - "8081:8081"  # Maps host port 8082 to container port 8080
     environment:
+      - ROLE=broker
       - BROKER_ID=2
-      - BROKER_PORT=8081
+      - HOST=broker2
+      - PORT=8082
+      - CONTROLLER_HOST=controller
+      - CONTROLLER_PORT=8090
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://broker1:8082/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    depends_on:
+      - controller
+    networks:
+      - distqueue-net
 
   broker3:
-    image: broker-image
+    image: distqueue/broker
     container_name: broker3
-    ports:
-      - "8082:8082"  # Maps host port 8083 to container port 8080
     environment:
+      - ROLE=broker
       - BROKER_ID=3
-      - BROKER_PORT=8082
+      - HOST=broker3
+      - PORT=8083
+      - CONTROLLER_HOST=controller
+      - CONTROLLER_PORT=8090
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://broker1:8083/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    depends_on:
+      - controller
+    networks:
+      - distqueue-net
+
+  producer:
+    image: distqueue/producer
+    container_name: producer
+    environment:
+      - ROLE=producer
+      - CONTROLLER_HOST=controller
+      - CONTROLLER_PORT=8090
+    depends_on:
+      - controller
+    networks:
+      - distqueue-net
+
+  consumer:
+    image: distqueue/consumer
+    container_name: consumer
+    environment:
+      - ROLE=consumer
+      - CONTROLLER_HOST=controller
+      - CONTROLLER_PORT=8090
+    depends_on:
+      - controller
+    networks:
+      - distqueue-net
+
+networks:
+  distqueue-net:
+    driver: bridge

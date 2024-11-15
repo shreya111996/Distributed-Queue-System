@@ -1,27 +1,133 @@
 package com.distqueue.consumer;
 
-import java.util.List;
-
-import com.distqueue.broker.Broker;
 import com.distqueue.core.Message;
+import com.distqueue.metadata.PartitionMetadata;
+import com.distqueue.producer.Producer.BrokerInfo;
 
+import java.io.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
+import java.util.List;
+import java.util.Map;
 
 public class Consumer {
 
-    private final List<Broker> brokers;
-    private final String topic;
-    private final String consumerGroup;
+    private final String controllerHost;
+    private final int controllerPort;
 
-    public Consumer(List<Broker> brokers, String topic, String consumerGroup) {
-        this.brokers = brokers;
-        this.topic = topic;
-        this.consumerGroup = consumerGroup;
+    public Consumer(String controllerHost, int controllerPort) {
+        this.controllerHost = controllerHost;
+        this.controllerPort = controllerPort;
     }
 
-    public void consume() {
-        int partitionId = 0; // Example: specify partition ID or add partitioning logic
-        Broker broker = brokers.get(0); // Example: retrieve messages from the first broker; adjust as needed
-        List<Message> messages = broker.getMessagesForPartition(topic, partitionId, 0);
-        messages.forEach(message -> System.out.println("Consumed message: " + new String(message.getPayload())));
+    public void consume(String topic) {
+        // Fetch metadata from controller
+        Map<Integer, PartitionMetadata> topicMetadata = fetchMetadata(topic);
+        if (topicMetadata == null) {
+            System.err.println("Topic metadata not found for topic " + topic);
+            return;
+        }
+
+        // For simplicity, consume from partition 0
+        int partitionId = 0;
+
+        // Fetch leader broker info from metadata
+        PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
+        int leaderId = partitionMetadata.getLeaderId();
+        BrokerInfo leaderInfo = fetchBrokerInfo(leaderId);
+
+        if (leaderInfo != null) {
+            try {
+                URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort()
+                        + "/consumeMessages?topicName=" + topic + "&partitionId=" + partitionId + "&offset=0");
+                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                conn.setRequestMethod("GET");
+
+                int responseCode = conn.getResponseCode();
+                if (responseCode == 200) {
+                    BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                    String response = in.readLine();
+                    in.close();
+
+                    byte[] data = Base64.getDecoder().decode(response);
+                    ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
+                    List<Message> messages = (List<Message>) ois.readObject();
+
+                    messages.forEach(message -> System.out.println("Consumed message: " + new String(message.getPayload())));
+                } else {
+                    System.err.println("Failed to consume messages from broker " + leaderId);
+                }
+            } catch (IOException | ClassNotFoundException e) {
+                e.printStackTrace();
+            }
+        } else {
+            System.err.println("Leader broker info not found for broker ID " + leaderId);
+        }
     }
+
+
+    @SuppressWarnings("unchecked")
+    private Map<Integer, PartitionMetadata> fetchMetadata(String topicName) {
+        try {
+            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+    
+            int responseCode = conn.getResponseCode();
+            if (responseCode == 200) {
+                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                String response = in.readLine();
+                in.close();
+    
+                byte[] data = Base64.getDecoder().decode(response);
+                ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
+                Map<Integer, PartitionMetadata> topicMetadata = (Map<Integer, PartitionMetadata>) ois.readObject();
+                return topicMetadata;
+            } else {
+                System.err.println("Failed to fetch metadata for topic " + topicName);
+            }
+        } catch (IOException | ClassNotFoundException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+    
+
+    private BrokerInfo fetchBrokerInfo(int brokerId) {
+        try {
+            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getBrokerInfo?brokerId=" + brokerId);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+    
+            int responseCode = conn.getResponseCode();
+            if (responseCode == 200) {
+                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                String response = in.readLine();
+                in.close();
+    
+                if (response.equals("Broker not found")) {
+                    System.err.println("Broker not found for broker ID " + brokerId);
+                    return null;
+                }
+    
+                String[] parts = response.split(":");
+                if (parts.length < 2) {
+                    System.err.println("Invalid broker info format for broker ID " + brokerId);
+                    return null;
+                }
+    
+                String host = parts[0];
+                int port = Integer.parseInt(parts[1]);
+                return new BrokerInfo(host, port);
+            } else {
+                System.err.println("Failed to fetch broker info for broker ID " + brokerId);
+            }
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    }
+    
+    
 }

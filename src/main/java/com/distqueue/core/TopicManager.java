@@ -27,8 +27,9 @@ public class TopicManager {
         topics.put(topicName, topic);
 
         for (int partition = 0; partition < numPartitions; partition++) {
-            PartitionMetadata partitionMetadata = new PartitionMetadata(replicationFactor);
+            PartitionMetadata partitionMetadata = new PartitionMetadata(partition, replicationFactor);
 
+            // Assign leader and followers
             if (!brokers.isEmpty()) {
                 int leaderId = brokers.get(partition % brokers.size()).getId();
                 partitionMetadata.setLeaderId(leaderId);

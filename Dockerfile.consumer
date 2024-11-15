@@ -1,0 +1,14 @@
+# Dockerfile.consumer
+
+FROM openjdk:17-jdk-slim
+
+WORKDIR /app
+
+COPY target/distqueue-application-1.0-SNAPSHOT.jar /app/consumer-application.jar
+
+ENV ROLE=consumer
+ENV CONTROLLER_HOST=controller
+ENV CONTROLLER_PORT=8090
+ENV JAVA_OPTS=""
+
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/consumer-application.jar"]
