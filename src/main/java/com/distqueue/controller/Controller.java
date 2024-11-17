@@ -1,7 +1,6 @@
 package com.distqueue.controller;
 
 import com.distqueue.metadata.PartitionMetadata;
-
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
@@ -12,6 +11,7 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.Base64;
 
 public class Controller {
 
@@ -26,7 +26,7 @@ public class Controller {
         this.controllerPort = port;
         // Start the heartbeat monitoring task
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(
-            this::checkBrokerHeartbeats, heartbeatInterval, heartbeatInterval, TimeUnit.MILLISECONDS);
+                this::checkBrokerHeartbeats, heartbeatInterval, heartbeatInterval, TimeUnit.MILLISECONDS);
     }
 
     public void start() throws IOException {
@@ -121,10 +121,13 @@ public class Controller {
             Map<Integer, PartitionMetadata> topicMetadata = metadata.get(topicName);
             String response;
             if (topicMetadata != null) {
+                // Serialize the topic metadata to byte array
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 ObjectOutputStream oos = new ObjectOutputStream(baos);
                 oos.writeObject(topicMetadata);
                 oos.flush();
+
+                // Base64 encode the serialized metadata before sending it
                 response = Base64.getEncoder().encodeToString(baos.toByteArray());
             } else {
                 response = "No metadata found for topic " + topicName;
@@ -142,7 +145,7 @@ public class Controller {
             String brokerIdStr = exchange.getRequestURI().getQuery().split("=")[1];
             int brokerId = Integer.parseInt(brokerIdStr);
             BrokerInfo brokerInfo = brokerRegistry.get(brokerId);
-    
+
             String response;
             if (brokerInfo != null) {
                 response = brokerInfo.getHost() + ":" + brokerInfo.getPort();
@@ -155,7 +158,7 @@ public class Controller {
             os.close();
         }
     }
-    
+
     // BrokerInfo class to store broker's network information
     public static class BrokerInfo {
         private final String host;
@@ -180,7 +183,7 @@ public class Controller {
     public void registerBroker(int brokerId, BrokerInfo brokerInfo) {
         brokerRegistry.put(brokerId, brokerInfo);
         System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port " + brokerInfo.getPort());
-    
+
         // Assign partitions to this broker if there are topics without assigned leaders
         for (Map<Integer, PartitionMetadata> partitionMetadataMap : metadata.values()) {
             for (PartitionMetadata partitionMetadata : partitionMetadataMap.values()) {
@@ -196,7 +199,6 @@ public class Controller {
             }
         }
     }
-    
 
     public void receiveHeartbeat(int brokerId) {
         brokerHeartbeats.put(brokerId, System.currentTimeMillis());

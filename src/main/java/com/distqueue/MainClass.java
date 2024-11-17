@@ -5,10 +5,16 @@ import com.distqueue.controller.Controller;
 import com.distqueue.producer.Producer;
 import com.distqueue.consumer.Consumer;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class MainClass {
 
     public static void main(String[] args) throws Exception {
         String role = System.getenv("ROLE"); // "controller", "broker", "producer", "consumer"
+
+        // Create a list of brokers to pass to each broker instance
+        List<Broker> allBrokers = new ArrayList<>();
 
         switch (role.toLowerCase()) {
             case "controller":
@@ -24,7 +30,12 @@ public class MainClass {
                 int port = Integer.parseInt(System.getenv("PORT"));
                 String controllerHost = System.getenv("CONTROLLER_HOST");
                 int controllerPortBroker = Integer.parseInt(System.getenv("CONTROLLER_PORT"));
-                Broker broker = new Broker(brokerId, host, port, controllerHost, controllerPortBroker);
+
+                // Create the broker and add it to the list
+                Broker broker = new Broker(brokerId, host, port, controllerHost, controllerPortBroker, allBrokers);
+                allBrokers.add(broker);  // Add the newly created broker to the list
+
+                // Start the broker
                 broker.start();
                 System.out.println("Broker " + brokerId + " started on port " + port);
                 break;
