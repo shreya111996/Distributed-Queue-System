@@ -6,12 +6,14 @@ import com.distqueue.core.Partition;
 import com.distqueue.core.Topic;
 import com.distqueue.metadata.PartitionMetadata;
 
+import com.distqueue.protocols.GossipProtocol;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 import java.io.*;
 import java.net.*;
+import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -25,13 +27,16 @@ public class Broker {
     private final Map<String, Topic> topics = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, PartitionMetadata>> metadataCache = new ConcurrentHashMap<>();
     private boolean isRunning = true;
+    private GossipProtocol gossipProtocol;
+    private final List<Broker> allBrokers;
 
-    public Broker(int brokerId, String host, int port, String controllerHost, int controllerPort) {
+    public Broker(int brokerId, String host, int port, String controllerHost, int controllerPort, List<Broker> allBrokers) {
         this.brokerId = brokerId;
         this.host = host;
         this.port = port;
         this.controllerHost = controllerHost;
         this.controllerPort = controllerPort;
+        this.allBrokers = allBrokers;  // Store the list of all brokers
     }
 
     // **Add the getId() method**
@@ -39,8 +44,11 @@ public class Broker {
         return brokerId;
     }
 
-
     public void start() throws IOException {
+        // Initialize and start gossip protocol with the list of all brokers
+        gossipProtocol = new GossipProtocol(allBrokers);
+        new Thread(() -> gossipProtocol.startGossip()).start();  // Start gossip in a separate thread
+
         // Start HTTP server to accept requests
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
         server.createContext("/replicateMessage", new ReplicateMessageHandler());
@@ -56,14 +64,14 @@ public class Broker {
 
         // Start sending heartbeats
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(
-            this::sendHeartbeat, 0, 2000, TimeUnit.MILLISECONDS);
+                this::sendHeartbeat, 0, 2000, TimeUnit.MILLISECONDS);
     }
 
     public void addTopic(Topic topic) {
         topics.put(topic.getName(), topic);
         System.out.println("Broker " + brokerId + " added topic: " + topic.getName());
     }
-    
+
     private void registerWithController() {
         try {
             URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/registerBroker");
@@ -88,6 +96,31 @@ public class Broker {
         }
     }
 
+    // Handle received gossip message
+    public void receivePushGossip(Message gossipMessage) {
+        System.out.println("Broker " + brokerId + " received gossip from " + gossipMessage.getSenderId());
+        processReceivedGossip(gossipMessage);
+    }
+
+    private void processReceivedGossip(Message gossipMessage) {
+        // Logic to synchronize metadata or other state based on received gossip message
+        System.out.println("Processing received gossip: " + gossipMessage.getGossipMetadata());
+    }
+
+    // Method to push gossip message to other brokers
+    public void pushGossipToPeers() {
+        Message gossipMessage = new Message("Broker-" + brokerId, "Metadata updates", Instant.now());
+        gossipProtocol.gossipPush(this);  // This pushes the message to a random broker
+    }
+
+    // Method to pull gossip from other brokers
+    public void pullGossipFromPeers() {
+        Message gossipMessage = gossipProtocol.gossipPull();  // Corrected: No argument passed
+        if (gossipMessage != null) {
+            processReceivedGossip(gossipMessage);
+        }
+    }
+
     private void sendHeartbeat() {
         if (isRunning) {
             try {
@@ -107,7 +140,6 @@ public class Broker {
     }
 
     // Handlers for HTTP requests
-
     class ReplicateMessageHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
