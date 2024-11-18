@@ -8,6 +8,7 @@ import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
@@ -63,7 +64,12 @@ public class Consumer {
                     }
 
                     try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {
+                        @SuppressWarnings("unchecked")
                         List<Message> messages = (List<Message>) ois.readObject();
+                        
+                        // Sort the messages by timestamp
+                        messages.sort(Comparator.comparing(Message::getTimestamp));
+
                         messages.forEach(message -> System.out.println("Consumed message: " + new String(message.getPayload())));
                     } catch (IOException | ClassNotFoundException e) {
                         System.err.println("Error during deserialization of the message list: " + e.getMessage());
