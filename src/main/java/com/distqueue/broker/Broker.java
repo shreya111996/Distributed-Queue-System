@@ -13,14 +13,25 @@ import com.sun.net.httpserver.HttpExchange;
 
 import java.io.*;
 import java.net.*;
-import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.*;
 
 public class Broker {
 
+    public int getBrokerId() {
+        return brokerId;
+    }
+
     private final int brokerId;
     private final String host;
+    public String getHost() {
+        return host;
+    }
+
+    public int getPort() {
+        return port;
+    }
+
     private final int port;
     private final String controllerHost;
     private final int controllerPort;
@@ -39,15 +50,11 @@ public class Broker {
         this.allBrokers = allBrokers;  // Store the list of all brokers
     }
 
-    // **Add the getId() method**
-    public int getId() {
-        return brokerId;
-    }
-
     public void start() throws IOException {
         // Initialize and start gossip protocol with the list of all brokers
         gossipProtocol = new GossipProtocol(allBrokers);
-        new Thread(() -> gossipProtocol.startGossip()).start();  // Start gossip in a separate thread
+        Thread gossipThread = new Thread(() -> gossipProtocol.startGossip());
+        gossipThread.start();  // Start gossip in a separate thread
 
         // Start HTTP server to accept requests
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
@@ -56,6 +63,8 @@ public class Broker {
         server.createContext("/publishMessage", new PublishMessageHandler());
         server.createContext("/consumeMessages", new ConsumeMessagesHandler());
         server.createContext("/health", new HealthCheckHandler());
+        server.createContext("/sendGossip", new SendGossipHandler());
+        server.createContext("/receiveGossip", new ReceiveGossipHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
 
@@ -65,6 +74,22 @@ public class Broker {
         // Start sending heartbeats
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(
                 this::sendHeartbeat, 0, 2000, TimeUnit.MILLISECONDS);
+
+        // Add a shutdown hook to stop the gossip protocol and other resources
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("Shutting down broker...");
+            try {
+                gossipProtocol.stopGossip();  // Stop the gossip protocol
+                gossipThread.join();  // Wait for the gossip thread to terminate
+                server.stop(0);  // Stop the HTTP server
+                System.out.println("Broker shut down gracefully.");
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Shutdown interrupted: " + e.getMessage());
+            }
+        }));
+
+        System.out.println("Broker started and running on port " + port);
     }
 
     public void addTopic(Topic topic) {
@@ -96,30 +121,30 @@ public class Broker {
         }
     }
 
-    // Handle received gossip message
-    public void receivePushGossip(Message gossipMessage) {
-        System.out.println("Broker " + brokerId + " received gossip from " + gossipMessage.getSenderId());
-        processReceivedGossip(gossipMessage);
-    }
+    // // Handle received gossip message
+    // public void receivePushGossip(Message gossipMessage) {
+    //     System.out.println("Broker " + brokerId + " received gossip from " + gossipMessage.getSenderId());
+    //     processReceivedGossip(gossipMessage);
+    // }
 
-    private void processReceivedGossip(Message gossipMessage) {
-        // Logic to synchronize metadata or other state based on received gossip message
-        System.out.println("Processing received gossip: " + gossipMessage.getGossipMetadata());
-    }
+    // private void processReceivedGossip(Message gossipMessage) {
+    //     // Logic to synchronize metadata or other state based on received gossip message
+    //     System.out.println("Processing received gossip: " + gossipMessage.getGossipMetadata());
+    // }
 
-    // Method to push gossip message to other brokers
-    public void pushGossipToPeers() {
-        Message gossipMessage = new Message("Broker-" + brokerId, "Metadata updates", Instant.now());
-        gossipProtocol.gossipPush(this);  // This pushes the message to a random broker
-    }
+    // // Method to push gossip message to other brokers
+    // public void pushGossipToPeers() {
+    //     Message gossipMessage = new Message("Broker-" + brokerId, "Metadata updates", Instant.now());
+    //     gossipProtocol.gossipPush(this);  // This pushes the message to a random broker
+    // }
 
-    // Method to pull gossip from other brokers
-    public void pullGossipFromPeers() {
-        Message gossipMessage = gossipProtocol.gossipPull();  // Corrected: No argument passed
-        if (gossipMessage != null) {
-            processReceivedGossip(gossipMessage);
-        }
-    }
+    // // Method to pull gossip from other brokers
+    // public void pullGossipFromPeers() {
+    //     Message gossipMessage = gossipProtocol.gossipPull();  // Corrected: No argument passed
+    //     if (gossipMessage != null) {
+    //         processReceivedGossip(gossipMessage);
+    //     }
+    // }
 
     private void sendHeartbeat() {
         if (isRunning) {
@@ -232,6 +257,52 @@ public class Broker {
             OutputStream os = exchange.getResponseBody();
             os.write(response.getBytes());
             os.close();
+        }
+    }
+
+    // Handler for /sendGossip endpoint
+    private class SendGossipHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+                ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
+
+                // Serialize local state (e.g., partition metadata, leadership info)
+                objectOutputStream.writeObject(metadataCache);
+                objectOutputStream.flush();
+                byte[] response = byteArrayOutputStream.toByteArray();
+
+                exchange.sendResponseHeaders(200, response.length);
+                OutputStream outputStream = exchange.getResponseBody();
+                outputStream.write(response);
+                outputStream.close();
+            } else {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+            }
+        }
+    }
+
+    // Handler for /receiveGossip endpoint
+    private class ReceiveGossipHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if ("POST".equals(exchange.getRequestMethod())) {
+                InputStream inputStream = exchange.getRequestBody();
+                ObjectInputStream objectInputStream = new ObjectInputStream(inputStream);
+
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Map<Integer, PartitionMetadata>> receivedState = (Map<String, Map<Integer, PartitionMetadata>>) objectInputStream.readObject();
+                    gossipProtocol.reconcileState(receivedState, Broker.this);
+                    exchange.sendResponseHeaders(200, -1); // OK
+                } catch (ClassNotFoundException e) {
+                    e.printStackTrace();
+                    exchange.sendResponseHeaders(500, -1); // Internal Server Error
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+            }
         }
     }
 
@@ -367,6 +438,7 @@ public class Broker {
 
                 byte[] data = Base64.getDecoder().decode(response);
                 ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
+                @SuppressWarnings("unchecked")
                 Map<Integer, PartitionMetadata> topicMetadata = (Map<Integer, PartitionMetadata>) ois.readObject();
 
                 metadataCache.put(topicName, topicMetadata);
@@ -388,6 +460,10 @@ public class Broker {
         } catch (IOException | ClassNotFoundException e) {
             e.printStackTrace();
         }
+    }
+
+    public Map<String, Map<Integer, PartitionMetadata>> getMetadataCache() {
+        return metadataCache;
     }
 
     private BrokerInfo fetchBrokerInfo(int brokerId) {

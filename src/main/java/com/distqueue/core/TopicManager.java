@@ -31,11 +31,11 @@ public class TopicManager {
 
             // Assign leader and followers
             if (!brokers.isEmpty()) {
-                int leaderId = brokers.get(partition % brokers.size()).getId();
+                int leaderId = brokers.get(partition % brokers.size()).getBrokerId();
                 partitionMetadata.setLeaderId(leaderId);
 
                 for (int i = 1; i < replicationFactor && i < brokers.size(); i++) {
-                    int followerId = brokers.get((partition + i) % brokers.size()).getId();
+                    int followerId = brokers.get((partition + i) % brokers.size()).getBrokerId();
                     partitionMetadata.addFollower(followerId);
                 }
             }
