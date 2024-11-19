@@ -36,8 +36,6 @@ public class MainClass {
                 Broker broker = new Broker(brokerId, host, port, controllerHost, controllerPortBroker, allBrokers);
                 allBrokers.add(broker);  // Add the newly created broker to the list
 
-                GossipProtocol gossipProtocol = new GossipProtocol(allBrokers);
-                gossipProtocol.startGossip();  // Start gossiping
                 // Start the broker
                 broker.start();
                 System.out.println("Broker " + brokerId + " started on port " + port);
