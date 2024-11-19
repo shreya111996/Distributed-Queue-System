@@ -15,6 +15,14 @@ public class Partition implements Serializable {
     private final AtomicInteger offset = new AtomicInteger(0);
     private boolean isLeader;
 
+    public int getPartitionId() {
+        return partitionId;
+    }
+
+    public int getReplicationFactor() {
+        return replicationFactor;
+    }
+
     public Partition(int partitionId, int replicationFactor) {
         this.partitionId = partitionId;
         this.replicationFactor = replicationFactor;

@@ -3,6 +3,7 @@ package com.distqueue;
 import com.distqueue.broker.Broker;
 import com.distqueue.controller.Controller;
 import com.distqueue.producer.Producer;
+import com.distqueue.protocols.GossipProtocol;
 import com.distqueue.consumer.Consumer;
 
 import java.util.ArrayList;
@@ -35,6 +36,8 @@ public class MainClass {
                 Broker broker = new Broker(brokerId, host, port, controllerHost, controllerPortBroker, allBrokers);
                 allBrokers.add(broker);  // Add the newly created broker to the list
 
+                GossipProtocol gossipProtocol = new GossipProtocol(allBrokers);
+                gossipProtocol.startGossip();  // Start gossiping
                 // Start the broker
                 broker.start();
                 System.out.println("Broker " + brokerId + " started on port " + port);
