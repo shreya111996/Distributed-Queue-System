@@ -182,7 +182,8 @@ public class Controller {
 
     public void registerBroker(int brokerId, BrokerInfo brokerInfo) {
         brokerRegistry.put(brokerId, brokerInfo);
-        System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port " + brokerInfo.getPort());
+        System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port "
+                + brokerInfo.getPort());
 
         // Assign partitions to this broker if there are topics without assigned leaders
         for (Map<Integer, PartitionMetadata> partitionMetadataMap : metadata.values()) {
@@ -190,11 +191,13 @@ public class Controller {
                 if (partitionMetadata.getLeaderId() == -1) {
                     // Assign this broker as the leader
                     partitionMetadata.setLeaderId(brokerId);
-                    System.out.println("Assigned broker " + brokerId + " as leader for partition " + partitionMetadata.getPartitionId());
+                    System.out.println("Assigned broker " + brokerId + " as leader for partition "
+                            + partitionMetadata.getPartitionId());
                 } else if (partitionMetadata.getFollowers().isEmpty()) {
                     // Add this broker as a follower
                     partitionMetadata.addFollower(brokerId);
-                    System.out.println("Added broker " + brokerId + " as follower for partition " + partitionMetadata.getPartitionId());
+                    System.out.println("Added broker " + brokerId + " as follower for partition "
+                            + partitionMetadata.getPartitionId());
                 }
             }
         }
@@ -245,7 +248,8 @@ public class Controller {
             newFollowers.remove(Integer.valueOf(newLeaderId));
             partitionMetadata.setFollowers(newFollowers);
 
-            System.out.println("New leader for topic " + topicName + " partition " + partitionMetadata.getPartitionId() + " is broker " + newLeaderId);
+            System.out.println("New leader for topic " + topicName + " partition " + partitionMetadata.getPartitionId()
+                    + " is broker " + newLeaderId);
 
             // Notify the new leader broker
             BrokerInfo newLeaderBroker = brokerRegistry.get(newLeaderId);
@@ -253,11 +257,13 @@ public class Controller {
                 notifyBrokerOfLeadershipChange(newLeaderBroker, topicName, partitionMetadata);
             }
         } else {
-            System.out.println("No available brokers to become leader for topic " + topicName + " partition " + partitionMetadata.getPartitionId());
+            System.out.println("No available brokers to become leader for topic " + topicName + " partition "
+                    + partitionMetadata.getPartitionId());
         }
     }
 
-    private void notifyBrokerOfLeadershipChange(BrokerInfo brokerInfo, String topicName, PartitionMetadata partitionMetadata) {
+    private void notifyBrokerOfLeadershipChange(BrokerInfo brokerInfo, String topicName,
+            PartitionMetadata partitionMetadata) {
         try {
             URL url = new URL("http://" + brokerInfo.getHost() + ":" + brokerInfo.getPort() + "/updateLeadership");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -275,7 +281,8 @@ public class Controller {
             if (responseCode == 200) {
                 System.out.println("Notified broker " + partitionMetadata.getLeaderId() + " of leadership change.");
             } else {
-                System.err.println("Failed to notify broker " + partitionMetadata.getLeaderId() + " of leadership change.");
+                System.err.println(
+                        "Failed to notify broker " + partitionMetadata.getLeaderId() + " of leadership change.");
             }
         } catch (IOException e) {
             e.printStackTrace();
