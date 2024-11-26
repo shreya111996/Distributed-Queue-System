@@ -3,7 +3,6 @@ package com.distqueue;
 import com.distqueue.broker.Broker;
 import com.distqueue.controller.Controller;
 import com.distqueue.producer.Producer;
-import com.distqueue.protocols.GossipProtocol;
 import com.distqueue.consumer.Consumer;
 
 import java.util.ArrayList;
@@ -34,7 +33,7 @@ public class MainClass {
 
                 // Create the broker and add it to the list
                 Broker broker = new Broker(brokerId, host, port, controllerHost, controllerPortBroker, allBrokers);
-                allBrokers.add(broker);  // Add the newly created broker to the list
+                allBrokers.add(broker); // Add the newly created broker to the list
 
                 // Start the broker
                 broker.start();

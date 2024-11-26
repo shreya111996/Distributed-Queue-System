@@ -7,14 +7,17 @@ import com.distqueue.core.Topic;
 import com.distqueue.metadata.PartitionMetadata;
 
 import com.distqueue.protocols.GossipProtocol;
+import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 import java.io.*;
 import java.net.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 public class Broker {
 
@@ -24,6 +27,7 @@ public class Broker {
 
     private final int brokerId;
     private final String host;
+
     public String getHost() {
         return host;
     }
@@ -41,20 +45,21 @@ public class Broker {
     private GossipProtocol gossipProtocol;
     private final List<Broker> allBrokers;
 
-    public Broker(int brokerId, String host, int port, String controllerHost, int controllerPort, List<Broker> allBrokers) {
+    public Broker(int brokerId, String host, int port, String controllerHost, int controllerPort,
+            List<Broker> allBrokers) {
         this.brokerId = brokerId;
         this.host = host;
         this.port = port;
         this.controllerHost = controllerHost;
         this.controllerPort = controllerPort;
-        this.allBrokers = allBrokers;  // Store the list of all brokers
+        this.allBrokers = allBrokers; // Store the list of all brokers
     }
 
     public void start() throws IOException {
         // Initialize and start gossip protocol with the list of all brokers
         gossipProtocol = new GossipProtocol(allBrokers);
         Thread gossipThread = new Thread(() -> gossipProtocol.startGossip());
-        gossipThread.start();  // Start gossip in a separate thread
+        gossipThread.start(); // Start gossip in a separate thread
 
         // Start HTTP server to accept requests
         HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
@@ -65,6 +70,8 @@ public class Broker {
         server.createContext("/health", new HealthCheckHandler());
         server.createContext("/sendGossip", new SendGossipHandler());
         server.createContext("/receiveGossip", new ReceiveGossipHandler());
+        server.createContext("/brokers/active", new ActiveBrokersHandler());
+        server.createContext("/brokers/leader", new LeaderBrokerHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
 
@@ -79,9 +86,9 @@ public class Broker {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Shutting down broker...");
             try {
-                gossipProtocol.stopGossip();  // Stop the gossip protocol
-                gossipThread.join();  // Wait for the gossip thread to terminate
-                server.stop(0);  // Stop the HTTP server
+                gossipProtocol.stopGossip(); // Stop the gossip protocol
+                gossipThread.join(); // Wait for the gossip thread to terminate
+                server.stop(0); // Stop the HTTP server
                 System.out.println("Broker shut down gracefully.");
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -123,33 +130,40 @@ public class Broker {
 
     // // Handle received gossip message
     // public void receivePushGossip(Message gossipMessage) {
-    //     System.out.println("Broker " + brokerId + " received gossip from " + gossipMessage.getSenderId());
-    //     processReceivedGossip(gossipMessage);
+    // System.out.println("Broker " + brokerId + " received gossip from " +
+    // gossipMessage.getSenderId());
+    // processReceivedGossip(gossipMessage);
     // }
 
     // private void processReceivedGossip(Message gossipMessage) {
-    //     // Logic to synchronize metadata or other state based on received gossip message
-    //     System.out.println("Processing received gossip: " + gossipMessage.getGossipMetadata());
+    // // Logic to synchronize metadata or other state based on received gossip
+    // message
+    // System.out.println("Processing received gossip: " +
+    // gossipMessage.getGossipMetadata());
     // }
 
     // // Method to push gossip message to other brokers
     // public void pushGossipToPeers() {
-    //     Message gossipMessage = new Message("Broker-" + brokerId, "Metadata updates", Instant.now());
-    //     gossipProtocol.gossipPush(this);  // This pushes the message to a random broker
+    // Message gossipMessage = new Message("Broker-" + brokerId, "Metadata updates",
+    // Instant.now());
+    // gossipProtocol.gossipPush(this); // This pushes the message to a random
+    // broker
     // }
 
     // // Method to pull gossip from other brokers
     // public void pullGossipFromPeers() {
-    //     Message gossipMessage = gossipProtocol.gossipPull();  // Corrected: No argument passed
-    //     if (gossipMessage != null) {
-    //         processReceivedGossip(gossipMessage);
-    //     }
+    // Message gossipMessage = gossipProtocol.gossipPull(); // Corrected: No
+    // argument passed
+    // if (gossipMessage != null) {
+    // processReceivedGossip(gossipMessage);
+    // }
     // }
 
     private void sendHeartbeat() {
         if (isRunning) {
             try {
-                URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/heartbeat?brokerId=" + brokerId);
+                URL url = new URL(
+                        "http://" + controllerHost + ":" + controllerPort + "/heartbeat?brokerId=" + brokerId);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 int responseCode = conn.getResponseCode();
@@ -168,19 +182,20 @@ public class Broker {
     class ReplicateMessageHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            ObjectInputStream in = new ObjectInputStream(exchange.getRequestBody());
-            try {
+            if (!"POST".equals(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+                return;
+            }
+            try (ObjectInputStream in = new ObjectInputStream(exchange.getRequestBody());
+                    OutputStream os = exchange.getResponseBody()) {
                 Message message = (Message) in.readObject();
                 replicateMessage(message);
                 String response = "Message replicated";
-                exchange.sendResponseHeaders(200, response.length());
-                OutputStream os = exchange.getResponseBody();
-                os.write(response.getBytes());
-                os.close();
+                exchange.sendResponseHeaders(200, response.getBytes(StandardCharsets.UTF_8).length);
+                os.write(response.getBytes(StandardCharsets.UTF_8));
             } catch (ClassNotFoundException e) {
                 e.printStackTrace();
-                exchange.sendResponseHeaders(500, 0);
-                exchange.getResponseBody().close();
+                exchange.sendResponseHeaders(500, -1); // Internal Server Error
             }
         }
     }
@@ -188,20 +203,48 @@ public class Broker {
     class UpdateLeadershipHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            ObjectInputStream in = new ObjectInputStream(exchange.getRequestBody());
-            try {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                // Method not allowed
+                exchange.sendResponseHeaders(405, -1); // 405 Method Not Allowed
+                return;
+            }
+    
+            // Use try-with-resources for safe stream handling
+            try (ObjectInputStream in = new ObjectInputStream(exchange.getRequestBody());
+                 OutputStream os = exchange.getResponseBody()) {
+    
+                // Deserialize topic name and metadata
                 String topicName = (String) in.readObject();
                 PartitionMetadata partitionMetadata = (PartitionMetadata) in.readObject();
+    
+                // Perform leadership update
                 updateLeadership(topicName, partitionMetadata);
+    
+                // Send response
                 String response = "Leadership updated";
+                exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
                 exchange.sendResponseHeaders(200, response.length());
-                OutputStream os = exchange.getResponseBody();
                 os.write(response.getBytes());
-                os.close();
             } catch (ClassNotFoundException e) {
+                // Handle deserialization errors
                 e.printStackTrace();
-                exchange.sendResponseHeaders(500, 0);
-                exchange.getResponseBody().close();
+                sendErrorResponse(exchange, 500, "Internal server error: Invalid object format.");
+            } catch (IOException e) {
+                // Handle IO exceptions
+                e.printStackTrace();
+                sendErrorResponse(exchange, 500, "Internal server error: Unable to process the request.");
+            } catch (Exception e) {
+                // Handle unexpected exceptions
+                e.printStackTrace();
+                sendErrorResponse(exchange, 500, "An unexpected error occurred.");
+            }
+        }
+
+        private void sendErrorResponse(HttpExchange exchange, int statusCode, String errorMessage) throws IOException {
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
+            exchange.sendResponseHeaders(statusCode, errorMessage.length());
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(errorMessage.getBytes());
             }
         }
     }
@@ -209,54 +252,138 @@ public class Broker {
     class PublishMessageHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            ObjectInputStream in = new ObjectInputStream(exchange.getRequestBody());
-            try {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1); // 405 Method Not Allowed
+                return;
+            }
+
+            try (ObjectInputStream in = new ObjectInputStream(exchange.getRequestBody());
+                    OutputStream os = exchange.getResponseBody()) {
+
+                // Deserialize message
                 Message message = (Message) in.readObject();
+
+                // Publish the message
                 publishMessage(message);
+
+                // Respond with success
                 String response = "Message published";
+                exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
                 exchange.sendResponseHeaders(200, response.length());
-                OutputStream os = exchange.getResponseBody();
                 os.write(response.getBytes());
-                os.close();
             } catch (ClassNotFoundException e) {
                 e.printStackTrace();
-                exchange.sendResponseHeaders(500, 0);
-                exchange.getResponseBody().close();
+                sendErrorResponse(exchange, 500, "Invalid message format.");
+            } catch (IOException e) {
+                e.printStackTrace();
+                sendErrorResponse(exchange, 500, "Error processing the request.");
+            } catch (Exception e) {
+                e.printStackTrace();
+                sendErrorResponse(exchange, 500, "An unexpected error occurred.");
+            }
+        }
+
+        private void sendErrorResponse(HttpExchange exchange, int statusCode, String message) throws IOException {
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
+            exchange.sendResponseHeaders(statusCode, message.length());
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(message.getBytes());
             }
         }
     }
 
     class ConsumeMessagesHandler implements HttpHandler {
-        @Override
         public void handle(HttpExchange exchange) throws IOException {
-            String[] queryParams = exchange.getRequestURI().getQuery().split("&");
-            String topicName = queryParams[0].split("=")[1];
-            int partitionId = Integer.parseInt(queryParams[1].split("=")[1]);
-            int offset = Integer.parseInt(queryParams[2].split("=")[1]);
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1); // 405 Method Not Allowed
+                return;
+            }
 
-            List<Message> messages = getMessagesForPartition(topicName, partitionId, offset);
+            try {
+                String query = exchange.getRequestURI().getQuery();
+                if (query == null || query.isEmpty()) {
+                    throw new IllegalArgumentException("Missing query parameters.");
+                }
 
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            ObjectOutputStream oos = new ObjectOutputStream(baos);
-            oos.writeObject(messages);
-            oos.flush();
-            String response = Base64.getEncoder().encodeToString(baos.toByteArray());
+                // Parse query parameters
+                Map<String, String> queryParams = parseQueryParameters(query);
+                String topicName = queryParams.get("topicName");
+                int partitionId = Integer.parseInt(queryParams.get("partitionId"));
+                int offset = Integer.parseInt(queryParams.get("offset"));
 
-            exchange.sendResponseHeaders(200, response.length());
-            OutputStream os = exchange.getResponseBody();
-            os.write(response.getBytes());
-            os.close();
+                if (topicName == null) {
+                    throw new IllegalArgumentException("Missing 'topicName' parameter.");
+                }
+
+                // Fetch messages
+                List<Message> messages = getMessagesForPartition(topicName, partitionId, offset);
+
+                // Serialize messages and encode in Base64
+                try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+
+                    oos.writeObject(messages);
+                    oos.flush();
+                    String response = Base64.getEncoder().encodeToString(baos.toByteArray());
+
+                    // Respond with serialized messages
+                    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+                    exchange.sendResponseHeaders(200, response.length());
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                }
+            } catch (IllegalArgumentException e) {
+                e.printStackTrace();
+                sendErrorResponse(exchange, 400, "Invalid query parameters: " + e.getMessage());
+            } catch (IOException e) {
+                e.printStackTrace();
+                sendErrorResponse(exchange, 500, "Error processing the request.");
+            } catch (Exception e) {
+                e.printStackTrace();
+                sendErrorResponse(exchange, 500, "An unexpected error occurred.");
+            }
+        }
+
+        private void sendErrorResponse(HttpExchange exchange, int statusCode, String message) throws IOException {
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
+            exchange.sendResponseHeaders(statusCode, message.length());
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(message.getBytes());
+            }
+        }
+
+        private Map<String, String> parseQueryParameters(String query) {
+            return Arrays.stream(query.split("&"))
+                    .map(param -> param.split("="))
+                    .collect(Collectors.toMap(parts -> parts[0], parts -> parts[1]));
         }
     }
 
     class HealthCheckHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1); // 405 Method Not Allowed
+                return;
+            }
+
             String response = "OK";
-            exchange.sendResponseHeaders(200, response.length());
-            OutputStream os = exchange.getResponseBody();
-            os.write(response.getBytes());
-            os.close();
+            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
+
+            try {
+                exchange.sendResponseHeaders(200, response.length());
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                String errorResponse = "Internal Server Error";
+                exchange.sendResponseHeaders(500, errorResponse.length());
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(errorResponse.getBytes());
+                }
+            }
         }
     }
 
@@ -264,19 +391,24 @@ public class Broker {
     private class SendGossipHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            if ("GET".equals(exchange.getRequestMethod())) {
-                ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
-                ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.getResponseHeaders().set("Content-Type", "application/octet-stream");
 
-                // Serialize local state (e.g., partition metadata, leadership info)
-                objectOutputStream.writeObject(metadataCache);
-                objectOutputStream.flush();
-                byte[] response = byteArrayOutputStream.toByteArray();
+                try (ByteArrayOutputStream byteArrayOutputStream = new ByteArrayOutputStream();
+                        ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteArrayOutputStream);
+                        OutputStream outputStream = exchange.getResponseBody()) {
 
-                exchange.sendResponseHeaders(200, response.length);
-                OutputStream outputStream = exchange.getResponseBody();
-                outputStream.write(response);
-                outputStream.close();
+                    // Serialize local state (e.g., partition metadata, leadership info)
+                    objectOutputStream.writeObject(metadataCache);
+                    objectOutputStream.flush();
+
+                    byte[] response = byteArrayOutputStream.toByteArray();
+                    exchange.sendResponseHeaders(200, response.length);
+                    outputStream.write(response);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    exchange.sendResponseHeaders(500, -1); // Internal Server Error
+                }
             } else {
                 exchange.sendResponseHeaders(405, -1); // Method Not Allowed
             }
@@ -287,22 +419,125 @@ public class Broker {
     private class ReceiveGossipHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            if ("POST".equals(exchange.getRequestMethod())) {
-                InputStream inputStream = exchange.getRequestBody();
-                ObjectInputStream objectInputStream = new ObjectInputStream(inputStream);
+            if ("POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.getResponseHeaders().set("Content-Type", "text/plain");
 
-                try {
+                try (InputStream inputStream = exchange.getRequestBody();
+                        ObjectInputStream objectInputStream = new ObjectInputStream(inputStream)) {
+
                     @SuppressWarnings("unchecked")
-                    Map<String, Map<Integer, PartitionMetadata>> receivedState = (Map<String, Map<Integer, PartitionMetadata>>) objectInputStream.readObject();
+                    Map<String, Map<Integer, PartitionMetadata>> receivedState = (Map<String, Map<Integer, PartitionMetadata>>) objectInputStream
+                            .readObject();
+
                     gossipProtocol.reconcileState(receivedState, Broker.this);
-                    exchange.sendResponseHeaders(200, -1); // OK
+                    exchange.sendResponseHeaders(200, 0); // OK
                 } catch (ClassNotFoundException e) {
+                    e.printStackTrace();
+                    String errorMessage = "Failed to deserialize received state.";
+                    exchange.sendResponseHeaders(500, errorMessage.length());
+                    try (OutputStream outputStream = exchange.getResponseBody()) {
+                        outputStream.write(errorMessage.getBytes());
+                    }
+                } catch (Exception e) {
                     e.printStackTrace();
                     exchange.sendResponseHeaders(500, -1); // Internal Server Error
                 }
             } else {
                 exchange.sendResponseHeaders(405, -1); // Method Not Allowed
             }
+        }
+    }
+
+    // Handler for /brokers/active endpoint
+    private class ActiveBrokersHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+
+                try (OutputStream os = exchange.getResponseBody()) {
+                    String response = new Gson().toJson(allBrokers);
+                    exchange.sendResponseHeaders(200, response.getBytes().length);
+                    os.write(response.getBytes());
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    exchange.sendResponseHeaders(500, -1); // Internal Server Error
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+            }
+        }
+    }
+
+    // Handler for /brokers/leader endpoint
+    private class LeaderBrokerHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+
+                try {
+                    Map<String, String> params = queryToMap(exchange.getRequestURI().getQuery());
+                    String topic = params.get("topic");
+
+                    if (topic == null || topic.isEmpty()) {
+                        String errorMessage = "{\"error\": \"Missing 'topic' query parameter\"}";
+                        exchange.sendResponseHeaders(400, errorMessage.getBytes().length); // Bad Request
+                        try (OutputStream os = exchange.getResponseBody()) {
+                            os.write(errorMessage.getBytes());
+                        }
+                        return;
+                    }
+
+                    PartitionMetadata leaderMetadata = getLeaderForTopic(topic);
+
+                    if (leaderMetadata != null) {
+                        String response = new Gson().toJson(leaderMetadata);
+                        exchange.sendResponseHeaders(200, response.getBytes().length);
+                        try (OutputStream os = exchange.getResponseBody()) {
+                            os.write(response.getBytes());
+                        }
+                    } else {
+                        String errorMessage = "{\"error\": \"Leader not found for the specified topic\"}";
+                        exchange.sendResponseHeaders(404, errorMessage.getBytes().length); // Not Found
+                        try (OutputStream os = exchange.getResponseBody()) {
+                            os.write(errorMessage.getBytes());
+                        }
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    exchange.sendResponseHeaders(500, -1); // Internal Server Error
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+            }
+        }
+
+        private PartitionMetadata getLeaderForTopic(String topic) {
+            Map<Integer, PartitionMetadata> partitions = metadataCache.get(topic);
+            if (partitions != null) {
+                for (PartitionMetadata metadata : partitions.values()) {
+                    if (metadata.getLeaderId() == brokerId) {
+                        return metadata;
+                    }
+                }
+            }
+            return null;
+        }
+
+        private Map<String, String> queryToMap(String query) {
+            Map<String, String> result = new HashMap<>();
+            if (query != null && !query.isEmpty()) {
+                for (String param : query.split("&")) {
+                    String[] entry = param.split("=");
+                    if (entry.length > 1) {
+                        result.put(entry[0], entry[1]);
+                    } else {
+                        result.put(entry[0], "");
+                    }
+                }
+            }
+            return result;
         }
     }
 
@@ -339,7 +574,9 @@ public class Broker {
             BrokerInfo followerInfo = fetchBrokerInfo(followerId);
             if (followerInfo != null) {
                 try {
-                    URL url = new URL("http://" + followerInfo.getHost() + ":" + followerInfo.getPort() + "/replicateMessage");
+                    URL url = new URL(
+                            "http://" + followerInfo.getHost() + ":" + followerInfo.getPort()
+                                    + "/replicateMessage");
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                     conn.setRequestMethod("POST");
                     conn.setDoOutput(true);
@@ -352,7 +589,9 @@ public class Broker {
 
                     int responseCode = conn.getResponseCode();
                     if (responseCode == 200) {
-                        System.out.println("Replicated message " + message.getMessageId() + " to follower " + followerId);
+                        System.out
+                                .println("Replicated message " + message.getMessageId() + " to follower "
+                                        + followerId);
                     } else {
                         System.err.println("Failed to replicate message to follower " + followerId);
                     }
@@ -411,7 +650,9 @@ public class Broker {
             if (partition != null) {
                 if (partitionMetadata.getLeaderId() == brokerId) {
                     partition.setLeader(true);
-                    System.out.println("Broker " + brokerId + " is now leader for topic " + topicName + " partition " + partitionMetadata.getPartitionId());
+                    System.out
+                            .println("Broker " + brokerId + " is now leader for topic " + topicName + " partition "
+                                    + partitionMetadata.getPartitionId());
                 } else {
                     partition.setLeader(false);
                 }
@@ -426,7 +667,8 @@ public class Broker {
 
     private void fetchMetadataForTopic(String topicName) {
         try {
-            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
+            URL url = new URL(
+                    "http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
 
@@ -467,7 +709,8 @@ public class Broker {
     }
 
     private BrokerInfo fetchBrokerInfo(int brokerId) {
-        // Since brokers register with the controller, we need to get their info from the controller
+        // Since brokers register with the controller, we need to get their info from
+        // the controller
         return null; // Implement as needed, perhaps cache broker info or fetch from controller
     }
 
