@@ -3,14 +3,15 @@ package com.distqueue.consumer;
 import com.distqueue.core.Message;
 import com.distqueue.metadata.PartitionMetadata;
 import com.distqueue.producer.Producer.BrokerInfo;
+import com.google.gson.Gson;
 
 import java.io.*;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Base64;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
+import java.util.Comparator;
+import java.util.UUID;
 
 public class Consumer {
 
@@ -40,45 +41,63 @@ public class Consumer {
 
         if (leaderInfo != null) {
             try {
-                URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort()
-                        + "/consumeMessages?topicName=" + topic + "&partitionId=" + partitionId + "&offset=0");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("GET");
+                // Long polling: continuously request new messages
+                UUID offset = null; // Use UUID instead of int
+                long pollingTimeout = 30000; // Timeout for long polling (30 seconds)
+                int retries = 5;
+                int delay = 1000; // Start with 1 second delay
 
-                int responseCode = conn.getResponseCode();
-                if (responseCode == 200) {
-                    BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                    String response = in.readLine();
-                    in.close();
+                while (true) {
+                    URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort()
+                            + "/longPolling?topicName=" + topic + "&partitionId=" + partitionId + "&offset=" + (offset == null ? 0 : offset.toString()));
+                    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                    conn.setRequestMethod("GET");
 
-                    // Debug log to ensure the Base64 response is correct
-                    System.out.println("Received Base64 encoded metadata: " + response);
+                    int responseCode = conn.getResponseCode();
+                    if (responseCode == 200) {
+                        BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                        String response = in.readLine();
+                        in.close();
 
-                    // Decode the Base64 string
-                    byte[] data = Base64.getDecoder().decode(response.trim().replaceAll("\\s", ""));
+                        // Debug log to ensure the response is correct
+                        System.out.println("Received JSON response: " + response);
 
-                    // Ensure decoded data is not empty or corrupted
-                    if (data == null || data.length == 0) {
-                        System.err.println("Decoded Base64 data is empty or invalid");
-                        return;
-                    }
+                        // Deserialize the JSON string into a list of messages
+                        Gson gson = new Gson();
+                        List<Message> messages = gson.fromJson(response, List.class);
 
-                    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {
-                        @SuppressWarnings("unchecked")
-                        List<Message> messages = (List<Message>) ois.readObject();
-                        
-                        // Sort the messages by timestamp
+                        if (messages == null || messages.isEmpty()) {
+                            System.err.println("No new messages available.");
+                            continue; // Try again if no new messages
+                        }
+
+                        // Sort the messages by timestamp (or any other criteria if necessary)
                         messages.sort(Comparator.comparing(Message::getTimestamp));
 
                         messages.forEach(message -> System.out.println("Consumed message: " + new String(message.getPayload())));
-                    } catch (IOException | ClassNotFoundException e) {
-                        System.err.println("Error during deserialization of the message list: " + e.getMessage());
-                        e.printStackTrace();
+
+                        // Update offset for next polling
+                        offset = messages.get(messages.size() - 1).getMessageId(); // This is a UUID now
+                    } else if (responseCode == 408) {
+                        // Timeout reached, no new messages available
+                        System.err.println("Timeout reached, no new messages available.");
+                        break; // Exit the polling loop
+                    } else {
+                        System.err.println("Failed to consume messages from broker " + leaderId);
+                        if (retries-- > 0) {
+                            System.out.println("Retrying in " + delay + " ms...");
+                            Thread.sleep(delay);
+                            delay *= 2; // Exponential backoff
+                        } else {
+                            break; // Exit after retries
+                        }
                     }
-                } else {
-                    System.err.println("Failed to consume messages from broker " + leaderId);
+
+                    // Wait before making the next long polling request (if needed)
+                    Thread.sleep(1000);
                 }
-            } catch (IOException e) {
+
+            } catch (IOException | InterruptedException e) {
                 System.err.println("Error fetching messages from broker " + leaderId + ": " + e.getMessage());
                 e.printStackTrace();
             }
@@ -86,6 +105,7 @@ public class Consumer {
             System.err.println("Leader broker info not found for broker ID " + leaderId);
         }
     }
+
 
     @SuppressWarnings("unchecked")
     private Map<Integer, PartitionMetadata> fetchMetadata(String topicName) {
@@ -105,19 +125,8 @@ public class Consumer {
                     return null;
                 }
 
-                byte[] data = Base64.getDecoder().decode(response.trim().replaceAll("\\s", ""));
-                if (data.length == 0) {
-                    System.err.println("Decoded Base64 data is empty for topic " + topicName);
-                    return null;
-                }
-
-                try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {
-                    Map<Integer, PartitionMetadata> topicMetadata = (Map<Integer, PartitionMetadata>) ois.readObject();
-                    return topicMetadata;
-                } catch (IOException | ClassNotFoundException e) {
-                    System.err.println("Error during deserialization of topic metadata: " + e.getMessage());
-                    e.printStackTrace();
-                }
+                Gson gson = new Gson();
+                return gson.fromJson(response, Map.class);
             } else {
                 System.err.println("Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
             }
@@ -128,30 +137,29 @@ public class Consumer {
         return null;
     }
 
-
     private BrokerInfo fetchBrokerInfo(int brokerId) {
         try {
             URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getBrokerInfo?brokerId=" + brokerId);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-    
+
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
                 String response = in.readLine();
                 in.close();
-    
+
                 if (response.equals("Broker not found")) {
                     System.err.println("Broker not found for broker ID " + brokerId);
                     return null;
                 }
-    
+
                 String[] parts = response.split(":");
                 if (parts.length < 2) {
                     System.err.println("Invalid broker info format for broker ID " + brokerId + ": " + response);
                     return null;
                 }
-    
+
                 String host = parts[0];
                 int port = Integer.parseInt(parts[1]);
                 return new BrokerInfo(host, port);
@@ -163,5 +171,4 @@ public class Consumer {
         }
         return null;
     }
-    
 }
