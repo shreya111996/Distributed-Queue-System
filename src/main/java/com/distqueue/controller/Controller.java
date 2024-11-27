@@ -167,14 +167,14 @@ public class Controller {
             ObjectOutputStream oos = new ObjectOutputStream(baos);
             oos.writeObject(brokers);
             oos.flush();
-    
+
             byte[] response = baos.toByteArray();
             exchange.sendResponseHeaders(200, response.length);
             OutputStream os = exchange.getResponseBody();
             os.write(response);
             os.close();
         }
-    }    
+    }
 
     // BrokerInfo class to store broker's network information
     public static class BrokerInfo {
@@ -200,7 +200,7 @@ public class Controller {
     public void registerBroker(int brokerId, BrokerInfo brokerInfo) {
         brokerRegistry.put(brokerId, brokerInfo);
         System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port " + brokerInfo.getPort());
-    
+
         for (String topicName : metadata.keySet()) {
             Map<Integer, PartitionMetadata> partitionMetadataMap = metadata.get(topicName);
             for (PartitionMetadata partitionMetadata : partitionMetadataMap.values()) {
@@ -213,7 +213,7 @@ public class Controller {
                     partitionMetadata.addFollower(brokerId);
                     System.out.println("Added broker " + brokerId + " as follower for topic " + topicName + " partition " + partitionMetadata.getPartitionId());
                 }
-    
+
                 if (leadershipChanged) {
                     BrokerInfo broker = brokerRegistry.get(brokerId);
                     notifyBrokerOfLeadershipChange(broker, topicName, partitionMetadata);
@@ -221,7 +221,7 @@ public class Controller {
             }
         }
     }
-    
+
 
     public void receiveHeartbeat(int brokerId) {
         brokerHeartbeats.put(brokerId, System.currentTimeMillis());
@@ -283,7 +283,7 @@ public class Controller {
     }
 
     private void notifyBrokerOfLeadershipChange(BrokerInfo brokerInfo, String topicName,
-            PartitionMetadata partitionMetadata) {
+                                                PartitionMetadata partitionMetadata) {
         try {
             URL url = new URL("http://" + brokerInfo.getHost() + ":" + brokerInfo.getPort() + "/updateLeadership");
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -362,5 +362,5 @@ public class Controller {
             }
         }
     }
-    
+
 }
