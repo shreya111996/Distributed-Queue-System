@@ -24,88 +24,100 @@ public class Producer {
     public void send(String topic, byte[] payload) {
         // Fetch metadata from controller
         Map<Integer, PartitionMetadata> topicMetadata = fetchMetadata(topic);
-        if (topicMetadata == null) {
-            System.err.println("Topic metadata not found for topic " + topic);
-            return;
-        }
+        int retries = 5;
+        int delay = 1000; // Start with 1 second delay
 
-        // For simplicity, send to partition 0
-        int partitionId = 0;
-        Message message = new Message(topic, partitionId, payload);
-
-        // Fetch leader broker info from metadata
-        PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
-        int leaderId = partitionMetadata.getLeaderId();
-        BrokerInfo leaderInfo = fetchBrokerInfo(leaderId);
-
-        if (leaderInfo != null) {
-            try {
-                URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort() + "/publishMessage");
-                HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                conn.setRequestMethod("POST");
-                conn.setDoOutput(true);
-
-                // Serialize the message object
-                ObjectOutputStream out = new ObjectOutputStream(conn.getOutputStream());
-                out.writeObject(message);
-                out.flush();
-                out.close();
-
-                int responseCode = conn.getResponseCode();
-                if (responseCode == 200) {
-                    System.out.println("Message sent to broker " + leaderId + " on topic: " + topic);
-                } else {
-                    System.err.println("Failed to send message to broker " + leaderId);
+        for (int i = 0; i < retries; i++) {
+            if (topicMetadata == null) {
+                System.err.println("Retrying to fetch metadata... Attempt " + (i + 1));
+                try {
+                    Thread.sleep(delay);
+                    delay *= 2; // Exponential backoff
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
+                
             }
-        } else {
-            System.err.println("Leader broker info not found for broker ID " + leaderId);
+            else {
+                // For simplicity, send to partition 0
+                int partitionId = 0;
+                Message message = new Message(topic, partitionId, payload);
+            
+                // Fetch leader broker info from metadata
+                PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
+                int leaderId = partitionMetadata.getLeaderId();
+                BrokerInfo leaderInfo = fetchBrokerInfo(leaderId);
+            
+                if (leaderInfo != null) {
+                    try {
+                        URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort() + "/publishMessage");
+                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+                        conn.setRequestMethod("POST");
+                        conn.setDoOutput(true);
+            
+                        // Serialize the message object
+                        ObjectOutputStream out = new ObjectOutputStream(conn.getOutputStream());
+                        out.writeObject(message);
+                        out.flush();
+                        out.close();
+            
+                        int responseCode = conn.getResponseCode();
+                        if (responseCode == 200) {
+                            System.out.println("Message sent to broker " + leaderId + " on topic: " + topic);
+                        } else {
+                            System.err.println("Failed to send message to broker " + leaderId);
+                        }
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                } else {
+                    System.err.println("Leader broker info not found for broker ID " + leaderId);
+                }
+            }
         }
+        
+
     }
 
     private Map<Integer, PartitionMetadata> fetchMetadata(String topicName) {
         try {
-            // Construct the URL for the metadata request
-            URL url = new URL(
-                    "http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
+            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-
-            // Check the HTTP response code
+    
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                // Read the response as a JSON string
+                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
                 StringBuilder responseBuilder = new StringBuilder();
-                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
-                    String line;
-                    while ((line = in.readLine()) != null) {
-                        responseBuilder.append(line);
-                    }
+                String line;
+    
+                while ((line = in.readLine()) != null) {
+                    responseBuilder.append(line);
                 }
-
-                // Deserialize the JSON response to a Map<Integer, PartitionMetadata>
+                in.close();
+    
                 String response = responseBuilder.toString();
+    
+                if (response.startsWith("No metadata found")) {
+                    System.err.println("No metadata found for topic " + topicName);
+                    return null;
+                }
+    
+                // Parse JSON response using Gson
                 Gson gson = new Gson();
-                Type metadataType = new TypeToken<Map<Integer, PartitionMetadata>>() {
-                }.getType();
-                Map<Integer, PartitionMetadata> topicMetadata = gson.fromJson(response, metadataType);
-
+                Type mapType = new TypeToken<Map<Integer, PartitionMetadata>>() {}.getType();
+                Map<Integer, PartitionMetadata> topicMetadata = gson.fromJson(response, mapType);
+    
                 return topicMetadata;
             } else {
-                System.err.println(
-                        "Failed to fetch metadata for topic " + topicName + ". Response code: " + responseCode);
+                System.err.println("Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
             }
         } catch (IOException e) {
-            System.err.println("Error connecting to the controller: " + e.getMessage());
-            e.printStackTrace();
-        } catch (Exception e) {
-            System.err.println("Error processing metadata response: " + e.getMessage());
+            System.err.println("Error fetching metadata for topic " + topicName + ": " + e.getMessage());
             e.printStackTrace();
         }
-
-        return null; // Return null if fetching metadata fails
+        return null;
     }
 
     private BrokerInfo fetchBrokerInfo(int brokerId) {
@@ -128,7 +140,7 @@ public class Producer {
 
                 String[] parts = response.split(":");
                 if (parts.length < 2) {
-                    System.err.println("Invalid broker info format for broker ID " + brokerId);
+                    System.err.println("Invalid broker info format for broker ID " + brokerId + ": " + response);
                     return null;
                 }
 
@@ -136,7 +148,7 @@ public class Producer {
                 int port = Integer.parseInt(parts[1]);
                 return new BrokerInfo(host, port);
             } else {
-                System.err.println("Failed to fetch broker info for broker ID " + brokerId);
+                System.err.println("Failed to fetch broker info for broker ID " + brokerId + ", response code: " + responseCode);
             }
         } catch (IOException e) {
             e.printStackTrace();

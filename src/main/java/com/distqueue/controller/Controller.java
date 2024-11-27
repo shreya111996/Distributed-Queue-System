@@ -36,14 +36,16 @@ public class Controller {
         server.createContext("/createTopic", new CreateTopicHandler());
         server.createContext("/getMetadata", new GetMetadataHandler());
         server.createContext("/getBrokerInfo", new GetBrokerInfoHandler());
+        server.createContext("/getAllBrokers", new GetAllBrokersHandler());
+
+        server.setExecutor(Executors.newCachedThreadPool());
+        server.start();
+
         // Add shutdown hook for graceful server shutdown
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             System.out.println("Shutting down server...");
             server.stop(0); // Graceful shutdown
         }));
-
-        server.setExecutor(Executors.newCachedThreadPool());
-        server.start();
 
     }
 
@@ -109,15 +111,26 @@ public class Controller {
             int numPartitions = Integer.parseInt(params[1].split("=")[1]);
             int replicationFactor = Integer.parseInt(params[2].split("=")[1]);
 
-            createTopic(topicName, numPartitions, replicationFactor);
+            String response;
+            int statusCode;
 
-            String response = "Topic created";
-            exchange.sendResponseHeaders(200, response.length());
+            boolean success = createTopic(topicName, numPartitions, replicationFactor);
+            if (success) {
+                response = "Topic created successfully";
+                statusCode = 200;
+            } else {
+                response = "Failed to create topic";
+                statusCode = 400; // Bad Request
+            }
+
+            exchange.sendResponseHeaders(statusCode, response.length());
             OutputStream os = exchange.getResponseBody();
             os.write(response.getBytes());
             os.close();
 
-            System.out.println("Topic " + topicName + " created with " + numPartitions + " partitions");
+            if (success) {
+                System.out.println("Topic " + topicName + " created with " + numPartitions + " partitions");
+            }
         }
     }
 
@@ -128,6 +141,8 @@ public class Controller {
             // Extract the topic name from the query parameter
             String topicName = exchange.getRequestURI().getQuery().split("=")[1];
             Map<Integer, PartitionMetadata> topicMetadata = metadata.get(topicName);
+
+            System.out.println("Returning metadata for topic " + topicName);
 
             // Prepare the response
             String response;
@@ -170,6 +185,23 @@ public class Controller {
         }
     }
 
+    class GetAllBrokersHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            List<BrokerInfo> brokers = new ArrayList<>(brokerRegistry.values());
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ObjectOutputStream oos = new ObjectOutputStream(baos);
+            oos.writeObject(brokers);
+            oos.flush();
+
+            byte[] response = baos.toByteArray();
+            exchange.sendResponseHeaders(200, response.length);
+            OutputStream os = exchange.getResponseBody();
+            os.write(response);
+            os.close();
+        }
+    }
+
     // BrokerInfo class to store broker's network information
     public static class BrokerInfo {
         private final String host;
@@ -197,19 +229,24 @@ public class Controller {
         System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port "
                 + brokerInfo.getPort());
 
-        // Assign partitions to this broker if there are topics without assigned leaders
-        for (Map<Integer, PartitionMetadata> partitionMetadataMap : metadata.values()) {
+        for (String topicName : metadata.keySet()) {
+            Map<Integer, PartitionMetadata> partitionMetadataMap = metadata.get(topicName);
             for (PartitionMetadata partitionMetadata : partitionMetadataMap.values()) {
+                boolean leadershipChanged = false;
                 if (partitionMetadata.getLeaderId() == -1) {
-                    // Assign this broker as the leader
                     partitionMetadata.setLeaderId(brokerId);
-                    System.out.println("Assigned broker " + brokerId + " as leader for partition "
-                            + partitionMetadata.getPartitionId());
-                } else if (partitionMetadata.getFollowers().isEmpty()) {
-                    // Add this broker as a follower
+                    leadershipChanged = true;
+                    System.out.println("Assigned broker " + brokerId + " as leader for topic " + topicName
+                            + " partition " + partitionMetadata.getPartitionId());
+                } else if (!partitionMetadata.getFollowers().contains(brokerId)) {
                     partitionMetadata.addFollower(brokerId);
-                    System.out.println("Added broker " + brokerId + " as follower for partition "
-                            + partitionMetadata.getPartitionId());
+                    System.out.println("Added broker " + brokerId + " as follower for topic " + topicName
+                            + " partition " + partitionMetadata.getPartitionId());
+                }
+
+                if (leadershipChanged) {
+                    BrokerInfo broker = brokerRegistry.get(brokerId);
+                    notifyBrokerOfLeadershipChange(broker, topicName, partitionMetadata);
                 }
             }
         }
@@ -302,27 +339,29 @@ public class Controller {
     }
 
     // Topic creation method
-    public void createTopic(String topicName, int numPartitions, int replicationFactor) {
+    public boolean createTopic(String topicName, int numPartitions, int replicationFactor) {
         if (metadata.containsKey(topicName)) {
             System.err.println("Topic already exists: " + topicName);
-            return;
+            return false;
+        }
+
+        if (brokerRegistry.isEmpty()) {
+            System.err.println("No brokers registered. Cannot create topic.");
+            return false;
         }
 
         Map<Integer, PartitionMetadata> partitionMetadataMap = new HashMap<>();
 
         for (int partitionId = 0; partitionId < numPartitions; partitionId++) {
             PartitionMetadata partitionMetadata = new PartitionMetadata(partitionId, replicationFactor);
+            List<Integer> brokerIds = new ArrayList<>(brokerRegistry.keySet());
+            int leaderIndex = partitionId % brokerIds.size();
+            int leaderId = brokerIds.get(leaderIndex);
+            partitionMetadata.setLeaderId(leaderId);
 
-            if (!brokerRegistry.isEmpty()) {
-                List<Integer> brokerIds = new ArrayList<>(brokerRegistry.keySet());
-                int leaderIndex = partitionId % brokerIds.size();
-                int leaderId = brokerIds.get(leaderIndex);
-                partitionMetadata.setLeaderId(leaderId);
-
-                for (int i = 1; i < replicationFactor && i < brokerIds.size(); i++) {
-                    int followerId = brokerIds.get((leaderIndex + i) % brokerIds.size());
-                    partitionMetadata.addFollower(followerId);
-                }
+            for (int i = 1; i < replicationFactor && i < brokerIds.size(); i++) {
+                int followerId = brokerIds.get((leaderIndex + i) % brokerIds.size());
+                partitionMetadata.addFollower(followerId);
             }
 
             partitionMetadataMap.put(partitionId, partitionMetadata);
@@ -330,36 +369,61 @@ public class Controller {
 
         metadata.put(topicName, partitionMetadataMap);
         System.out.println("Topic " + topicName + " created with metadata: " + partitionMetadataMap);
+
+        // Notify brokers of their leadership
+        notifyBrokersOfNewTopic(topicName, partitionMetadataMap);
+
+        return true;
     }
 
+    private void notifyBrokersOfNewTopic(String topicName, Map<Integer, PartitionMetadata> partitionMetadataMap) {
+        for (PartitionMetadata partitionMetadata : partitionMetadataMap.values()) {
+            int leaderId = partitionMetadata.getLeaderId();
+            if (leaderId != -1) {
+                BrokerInfo leaderBroker = brokerRegistry.get(leaderId);
+                if (leaderBroker != null) {
+                    notifyBrokerOfLeadershipChange(leaderBroker, topicName, partitionMetadata);
+                }
+            }
+            for (int followerId : partitionMetadata.getFollowers()) {
+                BrokerInfo followerBroker = brokerRegistry.get(followerId);
+                if (followerBroker != null) {
+                    notifyBrokerOfLeadershipChange(followerBroker, topicName, partitionMetadata);
+                }
+            }
+        }
+    }
 
     // public Map<Integer, BrokerInfo> getRegisteredBrokers() {
-    //     if (brokerRegistry.isEmpty()) {
-    //         System.out.println("No brokers are registered yet.");
-    //         return Collections.emptyMap(); // Return an empty map if no brokers are registered
-    //     }
-    
-    //     System.out.println("Currently registered brokers:");
-    //     brokerRegistry.forEach((brokerId, brokerInfo) -> {
-    //         System.out.println("Broker ID: " + brokerId + ", Host: " + brokerInfo.getHost() + ", Port: " + brokerInfo.getPort());
-    //     });
-    
-    //     return Collections.unmodifiableMap(brokerRegistry); // Return an unmodifiable map of brokers
+    // if (brokerRegistry.isEmpty()) {
+    // System.out.println("No brokers are registered yet.");
+    // return Collections.emptyMap(); // Return an empty map if no brokers are
+    // registered
     // }
 
+    // System.out.println("Currently registered brokers:");
+    // brokerRegistry.forEach((brokerId, brokerInfo) -> {
+    // System.out.println("Broker ID: " + brokerId + ", Host: " +
+    // brokerInfo.getHost() + ", Port: " + brokerInfo.getPort());
+    // });
+
+    // return Collections.unmodifiableMap(brokerRegistry); // Return an unmodifiable
+    // map of brokers
+    // }
 
     // public boolean areAllBrokersReady() {
-    //     if (brokerRegistry.isEmpty()) {
-    //         System.out.println("No brokers are registered yet.");
-    //         return false;
-    //     }
-    
-    //     boolean allReady = brokerRegistry.values().stream().allMatch(BrokerInfo::isReady);
-    //     if (allReady) {
-    //         System.out.println("All registered brokers are ready.");
-    //     } else {
-    //         System.out.println("Not all registered brokers are ready.");
-    //     }
-    //     return allReady;
+    // if (brokerRegistry.isEmpty()) {
+    // System.out.println("No brokers are registered yet.");
+    // return false;
+    // }
+
+    // boolean allReady =
+    // brokerRegistry.values().stream().allMatch(BrokerInfo::isReady);
+    // if (allReady) {
+    // System.out.println("All registered brokers are ready.");
+    // } else {
+    // System.out.println("Not all registered brokers are ready.");
+    // }
+    // return allReady;
     // }
 }

@@ -1,5 +1,6 @@
 package com.distqueue.core;
 
+import com.google.gson.Gson;
 import java.io.Serializable;
 import java.time.Instant;
 import java.util.UUID;
@@ -53,8 +54,9 @@ public class Message implements Serializable {
 
     // Getters for regular message fields
     public UUID getMessageId() {
-        return messageId;
+        return messageId;  // Ensure messageId is a UUID in your Message class
     }
+
 
     public byte[] getPayload() {
         return payload;
@@ -85,6 +87,13 @@ public class Message implements Serializable {
         return gossipMetadata;
     }
 
+    // Method to serialize the Message object to JSON using Gson
+    public String serializeMessage() {
+        Gson gson = new Gson();
+        return gson.toJson(this);  // Serialize the current object into JSON format
+    }
+
+    // Method to convert the message to a String representation (for printing)
     @Override
     public String toString() {
         if (gossipMetadata != null) {
@@ -100,5 +109,11 @@ public class Message implements Serializable {
                     ", partition=" + partition +
                     ", timestamp=" + timestamp + '}';
         }
+    }
+
+    // Method to create a Message object from JSON using Gson
+    public static Message fromJson(String json) {
+        Gson gson = new Gson();
+        return gson.fromJson(json, Message.class);  // Deserialize the JSON string back to a Message object
     }
 }
