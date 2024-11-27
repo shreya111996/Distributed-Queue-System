@@ -8,11 +8,13 @@ import com.distqueue.metadata.PartitionMetadata;
 
 import com.distqueue.protocols.GossipProtocol;
 import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
 
 import java.io.*;
+import java.lang.reflect.Type;
 import java.net.*;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -78,6 +80,13 @@ public class Broker {
         // Register with controller
         registerWithController();
 
+        // Wait until all brokers are ready to start gossiping
+        //waitForAllBrokersReady();
+
+        // Now start gossip after confirming all brokers are up
+        gossipThread.start();
+        System.out.println("Broker started and gossiping will begin after all brokers are ready.");
+
         // Start sending heartbeats
         Executors.newSingleThreadScheduledExecutor().scheduleAtFixedRate(
                 this::sendHeartbeat, 0, 2000, TimeUnit.MILLISECONDS);
@@ -98,6 +107,29 @@ public class Broker {
 
         System.out.println("Broker started and running on port " + port);
     }
+
+    // private void waitForAllBrokersReady() {
+
+    //     // Poll the controller or a shared resource until all brokers are registered and
+    //     // ready
+    //     boolean allBrokersReady = false;
+    //     while (!allBrokersReady) {
+    //         try {
+    //             // Poll the controller for the number of registered brokers
+    //             int registeredBrokers = getRegisteredBrokersFromController();
+    //             if (registeredBrokers == allBrokers.size()) {
+    //                 allBrokersReady = true; // All brokers are registered
+    //             } else {
+    //                 System.out
+    //                         .println("Waiting for all brokers to be registered... Current count: " + registeredBrokers);
+    //                 Thread.sleep(2000); // Wait before checking again
+    //             }
+    //         } catch (Exception e) {
+    //             e.printStackTrace();
+    //         }
+    //     }
+
+    // }
 
     public void addTopic(Topic topic) {
         topics.put(topic.getName(), topic);
@@ -208,18 +240,18 @@ public class Broker {
                 exchange.sendResponseHeaders(405, -1); // 405 Method Not Allowed
                 return;
             }
-    
+
             // Use try-with-resources for safe stream handling
             try (ObjectInputStream in = new ObjectInputStream(exchange.getRequestBody());
-                 OutputStream os = exchange.getResponseBody()) {
-    
+                    OutputStream os = exchange.getResponseBody()) {
+
                 // Deserialize topic name and metadata
                 String topicName = (String) in.readObject();
                 PartitionMetadata partitionMetadata = (PartitionMetadata) in.readObject();
-    
+
                 // Perform leadership update
                 updateLeadership(topicName, partitionMetadata);
-    
+
                 // Send response
                 String response = "Leadership updated";
                 exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
@@ -293,6 +325,8 @@ public class Broker {
     }
 
     class ConsumeMessagesHandler implements HttpHandler {
+
+        @Override
         public void handle(HttpExchange exchange) throws IOException {
             if (!"GET".equalsIgnoreCase(exchange.getRequestMethod())) {
                 exchange.sendResponseHeaders(405, -1); // 405 Method Not Allowed
@@ -318,20 +352,15 @@ public class Broker {
                 // Fetch messages
                 List<Message> messages = getMessagesForPartition(topicName, partitionId, offset);
 
-                // Serialize messages and encode in Base64
-                try (ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                        ObjectOutputStream oos = new ObjectOutputStream(baos)) {
+                // Serialize messages to JSON using Gson
+                Gson gson = new Gson();
+                String response = gson.toJson(messages);
 
-                    oos.writeObject(messages);
-                    oos.flush();
-                    String response = Base64.getEncoder().encodeToString(baos.toByteArray());
-
-                    // Respond with serialized messages
-                    exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
-                    exchange.sendResponseHeaders(200, response.length());
-                    try (OutputStream os = exchange.getResponseBody()) {
-                        os.write(response.getBytes());
-                    }
+                // Respond with serialized messages in JSON
+                exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+                exchange.sendResponseHeaders(200, response.getBytes().length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
                 }
             } catch (IllegalArgumentException e) {
                 e.printStackTrace();
@@ -345,11 +374,13 @@ public class Broker {
             }
         }
 
+        // Example method to send error responses
         private void sendErrorResponse(HttpExchange exchange, int statusCode, String message) throws IOException {
-            exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
-            exchange.sendResponseHeaders(statusCode, message.length());
+            exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+            String errorResponse = "{\"error\": \"" + message + "\"}";
+            exchange.sendResponseHeaders(statusCode, errorResponse.getBytes().length);
             try (OutputStream os = exchange.getResponseBody()) {
-                os.write(message.getBytes());
+                os.write(errorResponse.getBytes());
             }
         }
 
@@ -667,39 +698,49 @@ public class Broker {
 
     private void fetchMetadataForTopic(String topicName) {
         try {
+            // Create the URL for fetching metadata
             URL url = new URL(
                     "http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
 
+            // Check the response code
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                String response = in.readLine();
-                in.close();
-
-                byte[] data = Base64.getDecoder().decode(response);
-                ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
-                @SuppressWarnings("unchecked")
-                Map<Integer, PartitionMetadata> topicMetadata = (Map<Integer, PartitionMetadata>) ois.readObject();
-
-                metadataCache.put(topicName, topicMetadata);
-
-                // Create topic and partitions locally
-                Topic topic = new Topic(topicName, topicMetadata.size(), 1); // Replication factor not used here
-                for (PartitionMetadata pm : topicMetadata.values()) {
-                    topic.updatePartitionMetadata(pm.getPartitionId(), pm);
-                    Partition partition = topic.getPartition(pm.getPartitionId());
-                    if (partition != null) {
-                        partition.setLeader(pm.getLeaderId() == brokerId);
+                // Read the response
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                    StringBuilder responseBuilder = new StringBuilder();
+                    String line;
+                    while ((line = in.readLine()) != null) {
+                        responseBuilder.append(line);
                     }
+
+                    // Parse the JSON response into a Map
+                    String response = responseBuilder.toString();
+                    Gson gson = new Gson();
+                    Type type = new TypeToken<Map<Integer, PartitionMetadata>>() {
+                    }.getType();
+                    Map<Integer, PartitionMetadata> topicMetadata = gson.fromJson(response, type);
+
+                    // Cache the metadata
+                    metadataCache.put(topicName, topicMetadata);
+
+                    // Create the topic and its partitions locally
+                    Topic topic = new Topic(topicName, topicMetadata.size(), 1); // Replication factor not used here
+                    for (PartitionMetadata pm : topicMetadata.values()) {
+                        topic.updatePartitionMetadata(pm.getPartitionId(), pm);
+                        Partition partition = topic.getPartition(pm.getPartitionId());
+                        if (partition != null) {
+                            partition.setLeader(pm.getLeaderId() == brokerId);
+                        }
+                    }
+                    topics.put(topicName, topic);
+                    System.out.println("Fetched metadata and created topic " + topicName);
                 }
-                topics.put(topicName, topic);
-                System.out.println("Fetched metadata and created topic " + topicName);
             } else {
                 System.err.println("Failed to fetch metadata for topic " + topicName);
             }
-        } catch (IOException | ClassNotFoundException e) {
+        } catch (IOException e) {
             e.printStackTrace();
         }
     }

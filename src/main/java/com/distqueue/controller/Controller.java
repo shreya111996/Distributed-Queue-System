@@ -1,6 +1,7 @@
 package com.distqueue.controller;
 
 import com.distqueue.metadata.PartitionMetadata;
+import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpServer;
 import com.sun.net.httpserver.HttpHandler;
 import com.sun.net.httpserver.HttpExchange;
@@ -11,7 +12,6 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.Base64;
 
 public class Controller {
 
@@ -36,8 +36,15 @@ public class Controller {
         server.createContext("/createTopic", new CreateTopicHandler());
         server.createContext("/getMetadata", new GetMetadataHandler());
         server.createContext("/getBrokerInfo", new GetBrokerInfoHandler());
+        // Add shutdown hook for graceful server shutdown
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("Shutting down server...");
+            server.stop(0); // Graceful shutdown
+        }));
+
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
+
     }
 
     // Handlers for HTTP requests
@@ -115,24 +122,28 @@ public class Controller {
     }
 
     class GetMetadataHandler implements HttpHandler {
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            // Extract the topic name from the query parameter
             String topicName = exchange.getRequestURI().getQuery().split("=")[1];
             Map<Integer, PartitionMetadata> topicMetadata = metadata.get(topicName);
+
+            // Prepare the response
             String response;
             if (topicMetadata != null) {
-                // Serialize the topic metadata to byte array
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                ObjectOutputStream oos = new ObjectOutputStream(baos);
-                oos.writeObject(topicMetadata);
-                oos.flush();
-
-                // Base64 encode the serialized metadata before sending it
-                response = Base64.getEncoder().encodeToString(baos.toByteArray());
+                // Use Gson to serialize the topic metadata to JSON
+                Gson gson = new Gson();
+                response = gson.toJson(topicMetadata);
             } else {
-                response = "No metadata found for topic " + topicName;
+                // Send a JSON error message if metadata is not found
+                response = "{\"error\": \"No metadata found for topic " + topicName + "\"}";
             }
-            exchange.sendResponseHeaders(200, response.length());
+
+            // Send the response headers and body
+            exchange.getResponseHeaders().add("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, response.getBytes().length);
+
             OutputStream os = exchange.getResponseBody();
             os.write(response.getBytes());
             os.close();
@@ -176,6 +187,7 @@ public class Controller {
         public int getPort() {
             return port;
         }
+
     }
 
     // Existing methods...
@@ -319,4 +331,35 @@ public class Controller {
         metadata.put(topicName, partitionMetadataMap);
         System.out.println("Topic " + topicName + " created with metadata: " + partitionMetadataMap);
     }
+
+
+    // public Map<Integer, BrokerInfo> getRegisteredBrokers() {
+    //     if (brokerRegistry.isEmpty()) {
+    //         System.out.println("No brokers are registered yet.");
+    //         return Collections.emptyMap(); // Return an empty map if no brokers are registered
+    //     }
+    
+    //     System.out.println("Currently registered brokers:");
+    //     brokerRegistry.forEach((brokerId, brokerInfo) -> {
+    //         System.out.println("Broker ID: " + brokerId + ", Host: " + brokerInfo.getHost() + ", Port: " + brokerInfo.getPort());
+    //     });
+    
+    //     return Collections.unmodifiableMap(brokerRegistry); // Return an unmodifiable map of brokers
+    // }
+
+
+    // public boolean areAllBrokersReady() {
+    //     if (brokerRegistry.isEmpty()) {
+    //         System.out.println("No brokers are registered yet.");
+    //         return false;
+    //     }
+    
+    //     boolean allReady = brokerRegistry.values().stream().allMatch(BrokerInfo::isReady);
+    //     if (allReady) {
+    //         System.out.println("All registered brokers are ready.");
+    //     } else {
+    //         System.out.println("Not all registered brokers are ready.");
+    //     }
+    //     return allReady;
+    // }
 }

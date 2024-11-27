@@ -2,11 +2,13 @@ package com.distqueue.producer;
 
 import com.distqueue.core.Message;
 import com.distqueue.metadata.PartitionMetadata;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 import java.io.*;
+import java.lang.reflect.Type;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Base64;
 import java.util.Map;
 
 public class Producer {
@@ -26,29 +28,29 @@ public class Producer {
             System.err.println("Topic metadata not found for topic " + topic);
             return;
         }
-    
+
         // For simplicity, send to partition 0
         int partitionId = 0;
         Message message = new Message(topic, partitionId, payload);
-    
+
         // Fetch leader broker info from metadata
         PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
         int leaderId = partitionMetadata.getLeaderId();
         BrokerInfo leaderInfo = fetchBrokerInfo(leaderId);
-    
+
         if (leaderInfo != null) {
             try {
                 URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort() + "/publishMessage");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("POST");
                 conn.setDoOutput(true);
-    
+
                 // Serialize the message object
                 ObjectOutputStream out = new ObjectOutputStream(conn.getOutputStream());
                 out.writeObject(message);
                 out.flush();
                 out.close();
-    
+
                 int responseCode = conn.getResponseCode();
                 if (responseCode == 200) {
                     System.out.println("Message sent to broker " + leaderId + " on topic: " + topic);
@@ -62,58 +64,74 @@ public class Producer {
             System.err.println("Leader broker info not found for broker ID " + leaderId);
         }
     }
-    
 
-    @SuppressWarnings("unchecked")
     private Map<Integer, PartitionMetadata> fetchMetadata(String topicName) {
         try {
-            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
+            // Construct the URL for the metadata request
+            URL url = new URL(
+                    "http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
 
+            // Check the HTTP response code
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                String response = in.readLine();
-                in.close();
+                // Read the response as a JSON string
+                StringBuilder responseBuilder = new StringBuilder();
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                    String line;
+                    while ((line = in.readLine()) != null) {
+                        responseBuilder.append(line);
+                    }
+                }
 
-                byte[] data = Base64.getDecoder().decode(response);
-                ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data));
-                Map<Integer, PartitionMetadata> topicMetadata = (Map<Integer, PartitionMetadata>) ois.readObject();
+                // Deserialize the JSON response to a Map<Integer, PartitionMetadata>
+                String response = responseBuilder.toString();
+                Gson gson = new Gson();
+                Type metadataType = new TypeToken<Map<Integer, PartitionMetadata>>() {
+                }.getType();
+                Map<Integer, PartitionMetadata> topicMetadata = gson.fromJson(response, metadataType);
+
                 return topicMetadata;
             } else {
-                System.err.println("Failed to fetch metadata for topic " + topicName);
+                System.err.println(
+                        "Failed to fetch metadata for topic " + topicName + ". Response code: " + responseCode);
             }
-        } catch (IOException | ClassNotFoundException e) {
+        } catch (IOException e) {
+            System.err.println("Error connecting to the controller: " + e.getMessage());
+            e.printStackTrace();
+        } catch (Exception e) {
+            System.err.println("Error processing metadata response: " + e.getMessage());
             e.printStackTrace();
         }
-        return null;
-    }
 
+        return null; // Return null if fetching metadata fails
+    }
 
     private BrokerInfo fetchBrokerInfo(int brokerId) {
         try {
-            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getBrokerInfo?brokerId=" + brokerId);
+            URL url = new URL(
+                    "http://" + controllerHost + ":" + controllerPort + "/getBrokerInfo?brokerId=" + brokerId);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-    
+
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
                 String response = in.readLine();
                 in.close();
-    
+
                 if (response.equals("Broker not found")) {
                     System.err.println("Broker not found for broker ID " + brokerId);
                     return null;
                 }
-    
+
                 String[] parts = response.split(":");
                 if (parts.length < 2) {
                     System.err.println("Invalid broker info format for broker ID " + brokerId);
                     return null;
                 }
-    
+
                 String host = parts[0];
                 int port = Integer.parseInt(parts[1]);
                 return new BrokerInfo(host, port);
@@ -125,8 +143,6 @@ public class Producer {
         }
         return null;
     }
-    
-    
 
     // Add the createTopic method
     public void createTopic(String topicName, int numPartitions, int replicationFactor) {
@@ -135,13 +151,14 @@ public class Producer {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("POST");
             conn.setDoOutput(true);
-    
-            String params = "topicName=" + topicName + "&numPartitions=" + numPartitions + "&replicationFactor=" + replicationFactor;
+
+            String params = "topicName=" + topicName + "&numPartitions=" + numPartitions + "&replicationFactor="
+                    + replicationFactor;
             OutputStream os = conn.getOutputStream();
             os.write(params.getBytes());
             os.flush();
             os.close();
-    
+
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 System.out.println("Topic " + topicName + " created.");
@@ -152,7 +169,6 @@ public class Producer {
             e.printStackTrace();
         }
     }
-    
 
     public static class BrokerInfo {
         private final String host;

@@ -1,13 +1,19 @@
 package com.distqueue.consumer;
 
+import com.distqueue.adapters.MessageAdapter;
 import com.distqueue.core.Message;
 import com.distqueue.metadata.PartitionMetadata;
 import com.distqueue.producer.Producer.BrokerInfo;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.reflect.TypeToken;
 
 import java.io.*;
+import java.lang.reflect.Type;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.util.Base64;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +46,7 @@ public class Consumer {
 
         if (leaderInfo != null) {
             try {
+                // Prepare the URL to consume messages
                 URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort()
                         + "/consumeMessages?topicName=" + topic + "&partitionId=" + partitionId + "&offset=0");
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -47,36 +54,36 @@ public class Consumer {
 
                 int responseCode = conn.getResponseCode();
                 if (responseCode == 200) {
-                    BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                    String response = in.readLine();
-                    in.close();
+                    // Read the response from the broker
+                    try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                        StringBuilder responseBuilder = new StringBuilder();
+                        String line;
+                        while ((line = in.readLine()) != null) {
+                            responseBuilder.append(line);
+                        }
+                        String response = responseBuilder.toString();
 
-                    // Debug log to ensure the Base64 response is correct
-                    System.out.println("Received Base64 encoded metadata: " + response);
+                        // Deserialize JSON response into a list of messages
+                        Gson gson = new GsonBuilder()
+                                .registerTypeAdapter(Message.class, new MessageAdapter())
+                                .create();
+                        Type messageListType = new TypeToken<List<Message>>() {
+                        }.getType();
+                        List<Message> messages = gson.fromJson(response, messageListType);
 
-                    // Decode the Base64 string
-                    byte[] data = Base64.getDecoder().decode(response.trim().replaceAll("\\s", ""));
-
-                    // Ensure decoded data is not empty or corrupted
-                    if (data == null || data.length == 0) {
-                        System.err.println("Decoded Base64 data is empty or invalid");
-                        return;
-                    }
-
-                    try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {
-                        @SuppressWarnings("unchecked")
-                        List<Message> messages = (List<Message>) ois.readObject();
-                        
-                        // Sort the messages by timestamp
+                        // Ensure messages are sorted by timestamp
                         messages.sort(Comparator.comparing(Message::getTimestamp));
 
-                        messages.forEach(message -> System.out.println("Consumed message: " + new String(message.getPayload())));
-                    } catch (IOException | ClassNotFoundException e) {
-                        System.err.println("Error during deserialization of the message list: " + e.getMessage());
+                        // Print each consumed message
+                        messages.forEach(
+                                message -> System.out.println("Consumed message: " + new String(message.getPayload())));
+                    } catch (Exception e) {
+                        System.err.println("Error parsing JSON response: " + e.getMessage());
                         e.printStackTrace();
                     }
                 } else {
-                    System.err.println("Failed to consume messages from broker " + leaderId);
+                    System.err.println(
+                            "Failed to consume messages from broker " + leaderId + ". Response code: " + responseCode);
                 }
             } catch (IOException e) {
                 System.err.println("Error fetching messages from broker " + leaderId + ": " + e.getMessage());
@@ -87,38 +94,39 @@ public class Consumer {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private Map<Integer, PartitionMetadata> fetchMetadata(String topicName) {
         try {
-            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
+            URL url = new URL(
+                    "http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
 
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                String response = in.readLine();
-                in.close();
+                // Read the response as a JSON string
+                StringBuilder responseBuilder = new StringBuilder();
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                    String line;
+                    while ((line = in.readLine()) != null) {
+                        responseBuilder.append(line);
+                    }
+                }
+                String response = responseBuilder.toString();
+                System.out.println("Received JSON response: " + response);
 
-                // Debug log to ensure the response is correct
-                System.out.println("Received metadata response: " + response);
-
-                // Decode the Base64-encoded metadata
-                byte[] data = Base64.getDecoder().decode(response.trim().replaceAll("\\s", ""));
-
-                // Ensure decoded data is not empty or corrupted
-                if (data == null || data.length == 0) {
-                    System.err.println("Decoded Base64 data is empty or invalid");
-                    return null;
+                // Check if the response contains an error field
+                JsonObject jsonObject = JsonParser.parseString(response).getAsJsonObject();
+                if (jsonObject.has("error")) {
+                    String errorMessage = jsonObject.get("error").getAsString();
+                    System.err.println("Error fetching metadata: " + errorMessage);
+                    return null; // Return null for error responses
                 }
 
-                try (ObjectInputStream ois = new ObjectInputStream(new ByteArrayInputStream(data))) {
-                    Map<Integer, PartitionMetadata> topicMetadata = (Map<Integer, PartitionMetadata>) ois.readObject();
-                    return topicMetadata;
-                } catch (IOException | ClassNotFoundException e) {
-                    System.err.println("Error during deserialization of topic metadata: " + e.getMessage());
-                    e.printStackTrace();
-                }
+                // Deserialize JSON to Map<Integer, PartitionMetadata>
+                Gson gson = new Gson();
+                Type type = new TypeToken<Map<Integer, PartitionMetadata>>() {
+                }.getType();
+                return gson.fromJson(response.toString(), type);
             } else {
                 System.err.println("Failed to fetch metadata for topic " + topicName);
             }
@@ -131,7 +139,8 @@ public class Consumer {
 
     private BrokerInfo fetchBrokerInfo(int brokerId) {
         try {
-            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getBrokerInfo?brokerId=" + brokerId);
+            URL url = new URL(
+                    "http://" + controllerHost + ":" + controllerPort + "/getBrokerInfo?brokerId=" + brokerId);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
 
@@ -163,5 +172,11 @@ public class Consumer {
             e.printStackTrace();
         }
         return null;
+    }
+
+    public boolean checkTopicExists(String topicName) throws IOException {
+
+        // Call the controller's metadata API to check if the topic exists
+        return fetchMetadata(topicName) != null;
     }
 }

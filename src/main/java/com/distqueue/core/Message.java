@@ -40,6 +40,17 @@ public class Message implements Serializable {
         this.gossipMetadata = gossipMetadata;
     }
 
+    public Message(byte[] payload, Instant timestamp) {
+        this.messageId = UUID.randomUUID(); // Unique message ID for every message
+        this.payload = payload;
+        this.timestamp = timestamp != null ? timestamp : Instant.now(); // If no timestamp provided, use the current time
+        this.topic = null;  // Set topic to null (can be set later if needed)
+        this.partition = -1; // Set partition to -1 (can be set later if needed)
+        this.senderId = null;  // For non-gossip messages, senderId is null
+        this.gossipTimestamp = null;  // For non-gossip messages, gossipTimestamp is null
+        this.gossipMetadata = null;  // For non-gossip messages, gossipMetadata is null
+    }
+
     // Getters for regular message fields
     public UUID getMessageId() {
         return messageId;
