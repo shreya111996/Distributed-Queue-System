@@ -11,7 +11,6 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.*;
-import java.util.Base64;
 
 public class Controller {
 
@@ -36,6 +35,7 @@ public class Controller {
         server.createContext("/createTopic", new CreateTopicHandler());
         server.createContext("/getMetadata", new GetMetadataHandler());
         server.createContext("/getBrokerInfo", new GetBrokerInfoHandler());
+        server.createContext("/getAllBrokers", new GetAllBrokersHandler());
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
     }
@@ -159,6 +159,23 @@ public class Controller {
         }
     }
 
+    class GetAllBrokersHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            List<BrokerInfo> brokers = new ArrayList<>(brokerRegistry.values());
+            ByteArrayOutputStream baos = new ByteArrayOutputStream();
+            ObjectOutputStream oos = new ObjectOutputStream(baos);
+            oos.writeObject(brokers);
+            oos.flush();
+    
+            byte[] response = baos.toByteArray();
+            exchange.sendResponseHeaders(200, response.length);
+            OutputStream os = exchange.getResponseBody();
+            os.write(response);
+            os.close();
+        }
+    }    
+
     // BrokerInfo class to store broker's network information
     public static class BrokerInfo {
         private final String host;
@@ -182,26 +199,29 @@ public class Controller {
 
     public void registerBroker(int brokerId, BrokerInfo brokerInfo) {
         brokerRegistry.put(brokerId, brokerInfo);
-        System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port "
-                + brokerInfo.getPort());
-
-        // Assign partitions to this broker if there are topics without assigned leaders
-        for (Map<Integer, PartitionMetadata> partitionMetadataMap : metadata.values()) {
+        System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port " + brokerInfo.getPort());
+    
+        for (String topicName : metadata.keySet()) {
+            Map<Integer, PartitionMetadata> partitionMetadataMap = metadata.get(topicName);
             for (PartitionMetadata partitionMetadata : partitionMetadataMap.values()) {
+                boolean leadershipChanged = false;
                 if (partitionMetadata.getLeaderId() == -1) {
-                    // Assign this broker as the leader
                     partitionMetadata.setLeaderId(brokerId);
-                    System.out.println("Assigned broker " + brokerId + " as leader for partition "
-                            + partitionMetadata.getPartitionId());
-                } else if (partitionMetadata.getFollowers().isEmpty()) {
-                    // Add this broker as a follower
+                    leadershipChanged = true;
+                    System.out.println("Assigned broker " + brokerId + " as leader for topic " + topicName + " partition " + partitionMetadata.getPartitionId());
+                } else if (!partitionMetadata.getFollowers().contains(brokerId)) {
                     partitionMetadata.addFollower(brokerId);
-                    System.out.println("Added broker " + brokerId + " as follower for partition "
-                            + partitionMetadata.getPartitionId());
+                    System.out.println("Added broker " + brokerId + " as follower for topic " + topicName + " partition " + partitionMetadata.getPartitionId());
+                }
+    
+                if (leadershipChanged) {
+                    BrokerInfo broker = brokerRegistry.get(brokerId);
+                    notifyBrokerOfLeadershipChange(broker, topicName, partitionMetadata);
                 }
             }
         }
     }
+    
 
     public void receiveHeartbeat(int brokerId) {
         brokerHeartbeats.put(brokerId, System.currentTimeMillis());
@@ -296,21 +316,23 @@ public class Controller {
             return;
         }
 
+        if (brokerRegistry.isEmpty()) {
+            System.err.println("No brokers registered. Cannot create topic.");
+            return;
+        }
+
         Map<Integer, PartitionMetadata> partitionMetadataMap = new HashMap<>();
 
         for (int partitionId = 0; partitionId < numPartitions; partitionId++) {
             PartitionMetadata partitionMetadata = new PartitionMetadata(partitionId, replicationFactor);
+            List<Integer> brokerIds = new ArrayList<>(brokerRegistry.keySet());
+            int leaderIndex = partitionId % brokerIds.size();
+            int leaderId = brokerIds.get(leaderIndex);
+            partitionMetadata.setLeaderId(leaderId);
 
-            if (!brokerRegistry.isEmpty()) {
-                List<Integer> brokerIds = new ArrayList<>(brokerRegistry.keySet());
-                int leaderIndex = partitionId % brokerIds.size();
-                int leaderId = brokerIds.get(leaderIndex);
-                partitionMetadata.setLeaderId(leaderId);
-
-                for (int i = 1; i < replicationFactor && i < brokerIds.size(); i++) {
-                    int followerId = brokerIds.get((leaderIndex + i) % brokerIds.size());
-                    partitionMetadata.addFollower(followerId);
-                }
+            for (int i = 1; i < replicationFactor && i < brokerIds.size(); i++) {
+                int followerId = brokerIds.get((leaderIndex + i) % brokerIds.size());
+                partitionMetadata.addFollower(followerId);
             }
 
             partitionMetadataMap.put(partitionId, partitionMetadata);
@@ -318,5 +340,27 @@ public class Controller {
 
         metadata.put(topicName, partitionMetadataMap);
         System.out.println("Topic " + topicName + " created with metadata: " + partitionMetadataMap);
+
+        // Notify brokers of their leadership
+        notifyBrokersOfNewTopic(topicName, partitionMetadataMap);
     }
+
+    private void notifyBrokersOfNewTopic(String topicName, Map<Integer, PartitionMetadata> partitionMetadataMap) {
+        for (PartitionMetadata partitionMetadata : partitionMetadataMap.values()) {
+            int leaderId = partitionMetadata.getLeaderId();
+            if (leaderId != -1) {
+                BrokerInfo leaderBroker = brokerRegistry.get(leaderId);
+                if (leaderBroker != null) {
+                    notifyBrokerOfLeadershipChange(leaderBroker, topicName, partitionMetadata);
+                }
+            }
+            for (int followerId : partitionMetadata.getFollowers()) {
+                BrokerInfo followerBroker = brokerRegistry.get(followerId);
+                if (followerBroker != null) {
+                    notifyBrokerOfLeadershipChange(followerBroker, topicName, partitionMetadata);
+                }
+            }
+        }
+    }
+    
 }

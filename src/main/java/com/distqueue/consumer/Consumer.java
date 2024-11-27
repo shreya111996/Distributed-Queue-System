@@ -100,15 +100,14 @@ public class Consumer {
                 String response = in.readLine();
                 in.close();
 
-                // Debug log to ensure the response is correct
-                System.out.println("Received metadata response: " + response);
+                if (response.startsWith("No metadata found")) {
+                    System.err.println("No metadata found for topic " + topicName);
+                    return null;
+                }
 
-                // Decode the Base64-encoded metadata
                 byte[] data = Base64.getDecoder().decode(response.trim().replaceAll("\\s", ""));
-
-                // Ensure decoded data is not empty or corrupted
-                if (data == null || data.length == 0) {
-                    System.err.println("Decoded Base64 data is empty or invalid");
+                if (data.length == 0) {
+                    System.err.println("Decoded Base64 data is empty for topic " + topicName);
                     return null;
                 }
 
@@ -120,7 +119,7 @@ public class Consumer {
                     e.printStackTrace();
                 }
             } else {
-                System.err.println("Failed to fetch metadata for topic " + topicName);
+                System.err.println("Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
             }
         } catch (IOException e) {
             System.err.println("Error fetching metadata for topic " + topicName + ": " + e.getMessage());
@@ -129,39 +128,40 @@ public class Consumer {
         return null;
     }
 
+
     private BrokerInfo fetchBrokerInfo(int brokerId) {
         try {
             URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getBrokerInfo?brokerId=" + brokerId);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-
+    
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
                 String response = in.readLine();
                 in.close();
-
+    
                 if (response.equals("Broker not found")) {
                     System.err.println("Broker not found for broker ID " + brokerId);
                     return null;
                 }
-
+    
                 String[] parts = response.split(":");
                 if (parts.length < 2) {
-                    System.err.println("Invalid broker info format for broker ID " + brokerId);
+                    System.err.println("Invalid broker info format for broker ID " + brokerId + ": " + response);
                     return null;
                 }
-
+    
                 String host = parts[0];
                 int port = Integer.parseInt(parts[1]);
                 return new BrokerInfo(host, port);
             } else {
-                System.err.println("Failed to fetch broker info for broker ID " + brokerId);
+                System.err.println("Failed to fetch broker info for broker ID " + brokerId + ", response code: " + responseCode);
             }
         } catch (IOException e) {
-            System.err.println("Error fetching broker info for broker ID " + brokerId + ": " + e.getMessage());
             e.printStackTrace();
         }
         return null;
     }
+    
 }
