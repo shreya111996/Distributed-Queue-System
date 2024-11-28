@@ -19,6 +19,7 @@ public class Controller {
     private final Map<Integer, BrokerInfo> brokerRegistry = new ConcurrentHashMap<>();
     private final Map<Integer, Long> brokerHeartbeats = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, PartitionMetadata>> metadata = new ConcurrentHashMap<>();
+    private final int expectedBrokerCount = 3; // Set this based on your setup
     private final long heartbeatInterval = 2000; // Expected heartbeat interval in milliseconds
     private final long heartbeatTimeout = 5000; // Timeout to consider a broker as failed
 
@@ -31,12 +32,13 @@ public class Controller {
 
     public void start() throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress(controllerPort), 0);
-        server.createContext("/heartbeat", new HeartbeatHandler());
         server.createContext("/registerBroker", new RegisterBrokerHandler());
+        server.createContext("/heartbeat", new HeartbeatHandler());
         server.createContext("/createTopic", new CreateTopicHandler());
         server.createContext("/getMetadata", new GetMetadataHandler());
         server.createContext("/getBrokerInfo", new GetBrokerInfoHandler());
         server.createContext("/getAllBrokers", new GetAllBrokersHandler());
+        server.createContext("/readiness", new ReadinessHandler()); // New endpoint for readiness check
 
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
@@ -64,6 +66,26 @@ public class Controller {
             os.write(response.getBytes());
             os.close();
         }
+    }
+
+    class ReadinessHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            boolean ready = isControllerReady();
+            String response = ready ? "Ready" : "Not Ready";
+            int statusCode = ready ? 200 : 503; // HTTP 200 if ready, 503 if not
+
+            exchange.sendResponseHeaders(statusCode, response.length());
+            OutputStream os = exchange.getResponseBody();
+            os.write(response.getBytes());
+            os.close();
+
+            System.out.println("Readiness check: " + response);
+        }
+    }
+
+    public boolean isControllerReady() {
+        return brokerRegistry.size() >= expectedBrokerCount;
     }
 
     class RegisterBrokerHandler implements HttpHandler {
@@ -138,30 +160,40 @@ public class Controller {
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            // Extract the topic name from the query parameter
-            String topicName = exchange.getRequestURI().getQuery().split("=")[1];
-            Map<Integer, PartitionMetadata> topicMetadata = metadata.get(topicName);
-
-            System.out.println("Returning metadata for topic " + topicName);
-
-            // Prepare the response
             String response;
-            if (topicMetadata != null) {
-                // Use Gson to serialize the topic metadata to JSON
-                Gson gson = new Gson();
-                response = gson.toJson(topicMetadata);
-            } else {
-                // Send a JSON error message if metadata is not found
-                response = "{\"error\": \"No metadata found for topic " + topicName + "\"}";
+            int statusCode;
+
+            try {
+                // Extract topic name from query
+                String query = exchange.getRequestURI().getQuery();
+                String topicName = query.split("=")[1];
+
+                // Retrieve topic metadata
+                Map<Integer, PartitionMetadata> topicMetadata = metadata.get(topicName);
+
+                if (topicMetadata != null) {
+                    Gson gson = new Gson();
+                    response = gson.toJson(topicMetadata); // Serialize metadata to JSON
+                    statusCode = 200;
+                    System.out.println("Metadata fetched for topic: " + topicName);
+                } else {
+                    response = "{\"error\": \"No metadata found for topic " + topicName + "\"}";
+                    statusCode = 404;
+                    System.err.println("No metadata found for topic: " + topicName);
+                }
+            } catch (Exception e) {
+                response = "{\"error\": \"Invalid request format or processing error.\"}";
+                statusCode = 400;
+                System.err.println("Error processing metadata request: " + e.getMessage());
             }
 
-            // Send the response headers and body
+            // Send response headers and body
             exchange.getResponseHeaders().add("Content-Type", "application/json");
-            exchange.sendResponseHeaders(200, response.getBytes().length);
+            exchange.sendResponseHeaders(statusCode, response.getBytes().length);
 
-            OutputStream os = exchange.getResponseBody();
-            os.write(response.getBytes());
-            os.close();
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(response.getBytes());
+            }
         }
     }
 
@@ -225,10 +257,16 @@ public class Controller {
     // Existing methods...
 
     public void registerBroker(int brokerId, BrokerInfo brokerInfo) {
+        if (brokerRegistry.containsKey(brokerId)) {
+            System.out.println("Broker " + brokerId + " is already registered.");
+            return;
+        }
+
         brokerRegistry.put(brokerId, brokerInfo);
         System.out.println("Broker " + brokerId + " registered with host " + brokerInfo.getHost() + " and port "
                 + brokerInfo.getPort());
 
+        // Additional broker-related logic (e.g., assigning leader/follower roles)
         for (String topicName : metadata.keySet()) {
             Map<Integer, PartitionMetadata> partitionMetadataMap = metadata.get(topicName);
             for (PartitionMetadata partitionMetadata : partitionMetadataMap.values()) {
@@ -245,10 +283,14 @@ public class Controller {
                 }
 
                 if (leadershipChanged) {
-                    BrokerInfo broker = brokerRegistry.get(brokerId);
-                    notifyBrokerOfLeadershipChange(broker, topicName, partitionMetadata);
+                    notifyBrokerOfLeadershipChange(brokerInfo, topicName, partitionMetadata);
                 }
             }
+        }
+
+        System.out.println("Current broker count: " + brokerRegistry.size());
+        if (isControllerReady()) {
+            System.out.println("Controller is ready: All brokers registered.");
         }
     }
 
@@ -340,6 +382,29 @@ public class Controller {
 
     // Topic creation method
     public boolean createTopic(String topicName, int numPartitions, int replicationFactor) {
+        int retries = 5;
+        int delay = 2000; // 2 second
+
+        for (int i = 0; i < retries; i++) {
+            if (isControllerReady()) {
+                break;
+            }
+            System.err.println("Controller not ready. Retrying... (" + (i + 1) + "/" + retries + ")");
+            try {
+                Thread.sleep(delay);
+                delay *= 2; // Exponential backoff
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Retry interrupted.");
+                return false;
+            }
+        }
+
+        if (!isControllerReady()) {
+            System.err.println("Cannot create topic: Controller is still not ready after retries.");
+            return false;
+        }
+
         if (metadata.containsKey(topicName)) {
             System.err.println("Topic already exists: " + topicName);
             return false;
@@ -393,37 +458,4 @@ public class Controller {
             }
         }
     }
-
-    // public Map<Integer, BrokerInfo> getRegisteredBrokers() {
-    // if (brokerRegistry.isEmpty()) {
-    // System.out.println("No brokers are registered yet.");
-    // return Collections.emptyMap(); // Return an empty map if no brokers are
-    // registered
-    // }
-
-    // System.out.println("Currently registered brokers:");
-    // brokerRegistry.forEach((brokerId, brokerInfo) -> {
-    // System.out.println("Broker ID: " + brokerId + ", Host: " +
-    // brokerInfo.getHost() + ", Port: " + brokerInfo.getPort());
-    // });
-
-    // return Collections.unmodifiableMap(brokerRegistry); // Return an unmodifiable
-    // map of brokers
-    // }
-
-    // public boolean areAllBrokersReady() {
-    // if (brokerRegistry.isEmpty()) {
-    // System.out.println("No brokers are registered yet.");
-    // return false;
-    // }
-
-    // boolean allReady =
-    // brokerRegistry.values().stream().allMatch(BrokerInfo::isReady);
-    // if (allReady) {
-    // System.out.println("All registered brokers are ready.");
-    // } else {
-    // System.out.println("Not all registered brokers are ready.");
-    // }
-    // return allReady;
-    // }
 }

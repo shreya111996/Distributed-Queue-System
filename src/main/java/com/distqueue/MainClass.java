@@ -59,22 +59,6 @@ public class MainClass {
                 int controllerPortConsumer = Integer.parseInt(System.getenv("CONTROLLER_PORT"));
                 Consumer consumer = new Consumer(controllerHostConsumer, controllerPortConsumer);
 
-                // // Wait until the topic is available before consuming messages
-                // boolean topicAvailable = false;
-                // while (!topicAvailable) {
-                //     try {
-                //         // Try to fetch metadata and check if the topic exists
-                //         topicAvailable = consumer.checkTopicExists("TestTopic");
-                //         if (!topicAvailable) {
-                //             System.out.println("Waiting for topic 'TestTopic' to be created...");
-                //             Thread.sleep(1000); // Sleep and retry if the topic is not available
-                //         }
-                //     } catch (Exception e) {
-                //         System.out.println("Error fetching metadata, retrying...");
-                //         Thread.sleep(1000); // Sleep and retry
-                //     }
-                // }
-
                 // Consume messages
                 consumer.consume("TestTopic");
                 break;

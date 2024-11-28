@@ -22,96 +22,149 @@ public class Producer {
     }
 
     public void send(String topic, byte[] payload) {
-        // Fetch metadata from controller
-        Map<Integer, PartitionMetadata> topicMetadata = fetchMetadata(topic);
+        // Ensure the controller and brokers are ready
+        if (!waitForReadiness()) {
+            System.err.println("Controller or brokers are not ready. Aborting send operation.");
+            return;
+        }
+
+        // Fetch metadata with retry logic
+        Map<Integer, PartitionMetadata> topicMetadata = null;
         int retries = 5;
-        int delay = 1000; // Start with 1 second delay
+        int delay = 1000; // 1 second initial delay
 
         for (int i = 0; i < retries; i++) {
-            if (topicMetadata == null) {
-                System.err.println("Retrying to fetch metadata... Attempt " + (i + 1));
-                try {
-                    Thread.sleep(delay);
-                    delay *= 2; // Exponential backoff
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-                
-            }
-            else {
-                // For simplicity, send to partition 0
-                int partitionId = 0;
-                Message message = new Message(topic, partitionId, payload);
-            
-                // Fetch leader broker info from metadata
-                PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
-                int leaderId = partitionMetadata.getLeaderId();
-                BrokerInfo leaderInfo = fetchBrokerInfo(leaderId);
-            
-                if (leaderInfo != null) {
-                    try {
-                        URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort() + "/publishMessage");
-                        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-                        conn.setRequestMethod("POST");
-                        conn.setDoOutput(true);
-            
-                        // Serialize the message object
-                        ObjectOutputStream out = new ObjectOutputStream(conn.getOutputStream());
-                        out.writeObject(message);
-                        out.flush();
-                        out.close();
-            
-                        int responseCode = conn.getResponseCode();
-                        if (responseCode == 200) {
-                            System.out.println("Message sent to broker " + leaderId + " on topic: " + topic);
-                        } else {
-                            System.err.println("Failed to send message to broker " + leaderId);
-                        }
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
-                } else {
-                    System.err.println("Leader broker info not found for broker ID " + leaderId);
-                }
+            topicMetadata = fetchMetadata(topic);
+            if (topicMetadata != null)
+                break;
+
+            System.err.println("Retrying to fetch metadata... Attempt " + (i + 1));
+            try {
+                Thread.sleep(delay);
+                delay *= 2; // Exponential backoff
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Retry interrupted.");
+                return;
             }
         }
-        
 
+        if (topicMetadata == null) {
+            System.err.println("Failed to fetch metadata after multiple attempts. Aborting send operation.");
+            return;
+        }
+
+        // Send the message to partition 0 (for simplicity)
+        int partitionId = 0;
+        Message message = new Message(topic, partitionId, payload);
+
+        PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
+        if (partitionMetadata == null) {
+            System.err.println("No metadata found for partition " + partitionId);
+            return;
+        }
+
+        int leaderId = partitionMetadata.getLeaderId();
+        BrokerInfo leaderInfo = fetchBrokerInfo(leaderId);
+        if (leaderInfo == null) {
+            System.err.println("Leader broker info not found for broker ID " + leaderId);
+            return;
+        }
+
+        // Publish the message
+        publishMessage(leaderInfo, message);
     }
 
-    private Map<Integer, PartitionMetadata> fetchMetadata(String topicName) {
+    private boolean waitForReadiness() {
+        int maxRetries = 10; // Maximum number of retries
+        int delay = 2000; // Delay between retries (milliseconds)
+
+        for (int i = 0; i < maxRetries; i++) {
+            if (isControllerReady()) {
+                return true;
+            }
+            System.out.println("Controller not ready. Retrying in " + (delay / 1000) + " seconds...");
+            try {
+                Thread.sleep(delay);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.err.println("Readiness check interrupted.");
+                return false;
+            }
+        }
+        System.err.println("Controller did not become ready after multiple attempts.");
+        return false;
+    }
+
+    private void publishMessage(BrokerInfo leaderInfo, Message message) {
         try {
-            URL url = new URL("http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
+            URL url = new URL("http://" + leaderInfo.getHost() + ":" + leaderInfo.getPort() + "/publishMessage");
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+
+            try (ObjectOutputStream out = new ObjectOutputStream(conn.getOutputStream())) {
+                out.writeObject(message);
+                out.flush();
+            }
+
+            int responseCode = conn.getResponseCode();
+            if (responseCode == 200) {
+                System.out.println("Message sent successfully to broker " + leaderInfo.getHost());
+            } else {
+                System.err.println("Failed to send message, response code: " + responseCode);
+            }
+        } catch (IOException e) {
+            System.err.println("Error publishing message: " + e.getMessage());
+            e.printStackTrace();
+        }
+    }
+
+    private boolean isControllerReady() {
+        String readinessUrl = "http://" + controllerHost + ":" + controllerPort + "/readiness";
+        try {
+            // Create a connection to the readiness endpoint
+            URL url = new URL(readinessUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
     
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                StringBuilder responseBuilder = new StringBuilder();
-                String line;
-    
-                while ((line = in.readLine()) != null) {
-                    responseBuilder.append(line);
-                }
-                in.close();
-    
-                String response = responseBuilder.toString();
-    
-                if (response.startsWith("No metadata found")) {
-                    System.err.println("No metadata found for topic " + topicName);
-                    return null;
-                }
-    
-                // Parse JSON response using Gson
-                Gson gson = new Gson();
-                Type mapType = new TypeToken<Map<Integer, PartitionMetadata>>() {}.getType();
-                Map<Integer, PartitionMetadata> topicMetadata = gson.fromJson(response, mapType);
-    
-                return topicMetadata;
+                // Controller is ready
+                System.out.println("Controller is ready.");
+                return true;
+            } else if (responseCode == 503) {
+                // Controller is not ready
+                System.out.println("Controller is not ready.");
             } else {
-                System.err.println("Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
+                System.err.println("Unexpected response code from readiness check: " + responseCode);
+            }
+        } catch (IOException e) {
+            System.err.println("Error checking controller readiness: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    private Map<Integer, PartitionMetadata> fetchMetadata(String topicName) {
+        try {
+            URL url = new URL(
+                    "http://" + controllerHost + ":" + controllerPort + "/getMetadata?topicName=" + topicName);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+
+            int responseCode = conn.getResponseCode();
+            if (responseCode == 200) {
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                    String response = in.readLine();
+                    Gson gson = new Gson();
+                    Type mapType = new TypeToken<Map<Integer, PartitionMetadata>>() {
+                    }.getType();
+                    return gson.fromJson(response, mapType);
+                }
+            } else {
+                System.err.println(
+                        "Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
             }
         } catch (IOException e) {
             System.err.println("Error fetching metadata for topic " + topicName + ": " + e.getMessage());
@@ -129,28 +182,18 @@ public class Producer {
 
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                String response = in.readLine();
-                in.close();
-
-                if (response.equals("Broker not found")) {
-                    System.err.println("Broker not found for broker ID " + brokerId);
-                    return null;
+                try (BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()))) {
+                    String response = in.readLine();
+                    String[] parts = response.split(":");
+                    if (parts.length == 2) {
+                        return new BrokerInfo(parts[0], Integer.parseInt(parts[1]));
+                    }
                 }
-
-                String[] parts = response.split(":");
-                if (parts.length < 2) {
-                    System.err.println("Invalid broker info format for broker ID " + brokerId + ": " + response);
-                    return null;
-                }
-
-                String host = parts[0];
-                int port = Integer.parseInt(parts[1]);
-                return new BrokerInfo(host, port);
             } else {
-                System.err.println("Failed to fetch broker info for broker ID " + brokerId + ", response code: " + responseCode);
+                System.err.println("Failed to fetch broker info for broker ID " + brokerId);
             }
         } catch (IOException e) {
+            System.err.println("Error fetching broker info: " + e.getMessage());
             e.printStackTrace();
         }
         return null;
@@ -166,18 +209,18 @@ public class Producer {
 
             String params = "topicName=" + topicName + "&numPartitions=" + numPartitions + "&replicationFactor="
                     + replicationFactor;
-            OutputStream os = conn.getOutputStream();
-            os.write(params.getBytes());
-            os.flush();
-            os.close();
+            try (OutputStream os = conn.getOutputStream()) {
+                os.write(params.getBytes());
+                os.flush();
+            }
 
-            int responseCode = conn.getResponseCode();
-            if (responseCode == 200) {
-                System.out.println("Topic " + topicName + " created.");
+            if (conn.getResponseCode() == 200) {
+                System.out.println("Topic " + topicName + " created successfully.");
             } else {
                 System.err.println("Failed to create topic " + topicName);
             }
         } catch (IOException e) {
+            System.err.println("Error creating topic: " + e.getMessage());
             e.printStackTrace();
         }
     }

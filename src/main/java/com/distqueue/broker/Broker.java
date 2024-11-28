@@ -101,31 +101,6 @@ public class Broker {
         System.out.println("Broker started and running on port " + port);
     }
 
-    // private void waitForAllBrokersReady() {
-
-    // // Poll the controller or a shared resource until all brokers are registered
-    // and
-    // // ready
-    // boolean allBrokersReady = false;
-    // while (!allBrokersReady) {
-    // try {
-    // // Poll the controller for the number of registered brokers
-    // int registeredBrokers = getRegisteredBrokersFromController();
-    // if (registeredBrokers == allBrokers.size()) {
-    // allBrokersReady = true; // All brokers are registered
-    // } else {
-    // System.out
-    // .println("Waiting for all brokers to be registered... Current count: " +
-    // registeredBrokers);
-    // Thread.sleep(2000); // Wait before checking again
-    // }
-    // } catch (Exception e) {
-    // e.printStackTrace();
-    // }
-    // }
-
-    // }
-
     public void addTopic(Topic topic) {
         topics.put(topic.getName(), topic);
         System.out.println("Broker " + brokerId + " added topic: " + topic.getName());
@@ -203,36 +178,36 @@ public class Broker {
                 exchange.sendResponseHeaders(405, -1); // Method Not Allowed
                 return;
             }
-
+    
             String query = exchange.getRequestURI().getQuery();
             if (query == null || query.isEmpty()) {
                 exchange.sendResponseHeaders(400, -1); // Bad Request
                 return;
             }
-
+    
             // Parse query parameters to get topic, partition, and offset
             Map<String, String> queryParams = parseQueryParameters(query);
             String topicName = queryParams.get("topicName");
             int partitionId = Integer.parseInt(queryParams.get("partitionId"));
             int offset = Integer.parseInt(queryParams.get("offset"));
-
+    
             // Get the topic and partition
             Topic topic = topics.get(topicName);
             if (topic == null) {
                 sendErrorResponse(exchange, 404, "Topic not found");
                 return;
             }
-
+    
             Partition partition = topic.getPartition(partitionId);
             if (partition == null) {
                 sendErrorResponse(exchange, 404, "Partition not found");
                 return;
             }
-
+    
             long startTime = System.currentTimeMillis();
             long timeout = 30000; // 30 seconds timeout
             int pollingInterval = 1000; // polling interval (1 second)
-
+    
             // Long polling: wait until new messages are available in the partition
             while (partition.getCurrentOffset() <= offset) {
                 if (System.currentTimeMillis() - startTime > timeout) {
@@ -240,7 +215,7 @@ public class Broker {
                     sendErrorResponse(exchange, 408, errorMessage);
                     return;
                 }
-
+    
                 // Adjust polling interval based on load
                 try {
                     Thread.sleep(pollingInterval);
@@ -251,21 +226,27 @@ public class Broker {
                     return;
                 }
             }
-
+    
             // Once new messages are available, fetch and return them
             List<Message> messages = partition.getMessages(offset);
-
+    
+            // If no messages are found, send a response with an empty list
+            if (messages == null || messages.isEmpty()) {
+                messages = new ArrayList<>();  // Return an empty list if no new messages
+            }
+    
             // Use Gson to serialize the messages into JSON
             Gson gson = new Gson();
             String response = gson.toJson(messages);
-
+    
             exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
             exchange.sendResponseHeaders(200, response.length());
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(response.getBytes());
+                os.flush(); // Ensure the response is sent properly
             }
         }
-
+    
         private void sendErrorResponse(HttpExchange exchange, int statusCode, String message) throws IOException {
             exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
             exchange.sendResponseHeaders(statusCode, message.length());
@@ -273,7 +254,7 @@ public class Broker {
                 os.write(message.getBytes());
             }
         }
-
+    
         private Map<String, String> parseQueryParameters(String query) {
             return Arrays.stream(query.split("&"))
                     .map(param -> param.split("="))
