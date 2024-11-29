@@ -262,10 +262,6 @@ public class Controller {
                 // Fetch the last heartbeat from the separate map
                 long lastHeartbeat = brokerHeartbeats.getOrDefault(brokerId, 0L);
 
-                System.out.println("In the getActiveBrokers() Checking broker " + brokerInfo.getHost() + ":"
-                        + brokerInfo.getPort() +
-                        " last heartbeat: " + lastHeartbeat + " current time: " + currentTime);
-
                 if (currentTime - lastHeartbeat < heartbeatTimeout) {
                     activeBrokers.add(brokerInfo);
                 }
@@ -375,9 +371,6 @@ public class Controller {
         long currentTime = System.currentTimeMillis();
         for (Integer brokerId : new HashSet<>(brokerRegistry.keySet())) {
             long lastHeartbeat = brokerHeartbeats.getOrDefault(brokerId, 0L);
-            System.out.println("In the method checkBrokerHeartbeats() Checking broker " + brokerId + " last heartbeat: "
-                    + lastHeartbeat + " current time: "
-                    + currentTime);
             if (currentTime - lastHeartbeat > heartbeatTimeout) {
                 System.out.println("Broker " + brokerId + " is considered dead.");
                 handleBrokerFailure(brokerId);
