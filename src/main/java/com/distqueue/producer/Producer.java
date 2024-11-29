@@ -127,7 +127,7 @@ public class Producer {
             URL url = new URL(readinessUrl);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
-    
+
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 // Controller is ready

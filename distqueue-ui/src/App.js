@@ -1,5 +1,5 @@
 import React from 'react';
-import { BrowserRouter as Router, Route, Switch } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Dashboard from './components/Dashboard';
 import Brokers from './components/Brokers';
 import Topics from './components/Topics';
@@ -9,12 +9,12 @@ function App() {
   return (
     <Router>
       <div>
-        <Switch>
-          <Route path="/" exact component={Dashboard} />
-          <Route path="/brokers" component={Brokers} />
-          <Route path="/topics" component={Topics} />
-          <Route path="/messages" component={Messages} />
-        </Switch>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/brokers" element={<Brokers />} />
+          <Route path="/topics" element={<Topics />} />
+          <Route path="/messages" element={<Messages />} />
+        </Routes>
       </div>
     </Router>
   );

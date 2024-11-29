@@ -273,19 +273,25 @@ public class Consumer {
 /*
  * 
  * Example for communication:
-If the producer container needs to access the controller:
-
-java
-Copy code
-URL url = new URL("http://controller:8090/longPolling?topicName=TestTopic&partitionId=0&offset=" + offset);
-If the consumer container needs to access broker1 (for internal communication inside Docker network):
-
-java
-Copy code
-URL url = new URL("http://broker1:8081/longPolling?topicName=TestTopic&partitionId=0&offset=" + offset);
-If you're accessing broker1 from your host machine:
-
-java
-Copy code
-URL url = new URL("http://localhost:8085/longPolling?topicName=TestTopic&partitionId=0&
+ * If the producer container needs to access the controller:
+ * 
+ * java
+ * Copy code
+ * URL url = new URL(
+ * "http://controller:8090/longPolling?topicName=TestTopic&partitionId=0&offset="
+ * + offset);
+ * If the consumer container needs to access broker1 (for internal communication
+ * inside Docker network):
+ * 
+ * java
+ * Copy code
+ * URL url = new URL(
+ * "http://broker1:8081/longPolling?topicName=TestTopic&partitionId=0&offset=" +
+ * offset);
+ * If you're accessing broker1 from your host machine:
+ * 
+ * java
+ * Copy code
+ * URL url = new
+ * URL("http://localhost:8085/longPolling?topicName=TestTopic&partitionId=0&
  */
