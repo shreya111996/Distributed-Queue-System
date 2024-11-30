@@ -10,6 +10,10 @@ public class PartitionMetadata implements Serializable {
     private int leaderId = -1; // Store the leader by ID rather than Broker object
     private final List<Integer> followerIds = new ArrayList<>(); // Store followers by their broker IDs
 
+    public List<Integer> getFollowerIds() {
+        return followerIds;
+    }
+
     // Default constructor needed for Gson deserialization
     public PartitionMetadata() {
     }

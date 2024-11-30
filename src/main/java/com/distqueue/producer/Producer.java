@@ -9,12 +9,18 @@ import java.io.*;
 import java.lang.reflect.Type;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class Producer {
 
     private final String controllerHost;
     private final int controllerPort;
+    private Map<String, Integer> partitionCounter = new ConcurrentHashMap<>(); // track the current partition for
+                                                                               // round-robin
+    private Map<String, Map<Integer, Long>> partitionOffsetMap = new ConcurrentHashMap<>(); // track the current offset
+                                                                                            // for each partition
 
     public Producer(String controllerHost, int controllerPort) {
         this.controllerHost = controllerHost;
@@ -54,13 +60,13 @@ public class Producer {
             return;
         }
 
-        // Send the message to partition 0 (for simplicity)
-        int partitionId = 0;
-        Message message = new Message(topic, partitionId, payload);
+        // Calculate the partition using round-robin
+        int numberOfPartitions = topicMetadata.size();
+        int partitionId = getNextPartition(topic, numberOfPartitions);
 
         PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
         if (partitionMetadata == null) {
-            System.err.println("No metadata found for partition " + partitionId);
+            // System.err.println("No metadata found for partition " + partitionId);
             return;
         }
 
@@ -71,8 +77,33 @@ public class Producer {
             return;
         }
 
-        // Publish the message
+        long offset = getNextOffset(topic, partitionId);
+        Message message = new Message(topic, partitionId, offset, payload);
         publishMessage(leaderInfo, message);
+    }
+
+    private long getNextOffset(String topic, int partition) {
+
+        partitionOffsetMap.putIfAbsent(topic, new HashMap<>());
+        Map<Integer, Long> offsets = partitionOffsetMap.get(topic);
+        offsets.putIfAbsent(partition, 0L);
+        long nextOffset = offsets.get(partition);
+        offsets.put(partition, nextOffset + 1);
+        return nextOffset;
+    }
+
+    // Get the next partition ID using a round-robin strategy
+    private int getNextPartition(String topic, int numberOfPartitions) {
+        // Initialize the counter for the topic if not present
+        partitionCounter.putIfAbsent(topic, 0);
+
+        // Get the current partition index and increment it atomically
+        int currentPartition = partitionCounter.get(topic);
+        int nextPartition = (currentPartition + 1) % numberOfPartitions;
+
+        // Update the counter
+        partitionCounter.put(topic, nextPartition);
+        return currentPartition;
     }
 
     private boolean waitForReadiness() {
@@ -131,12 +162,14 @@ public class Producer {
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 // Controller is ready
-                System.out.println("Controller is ready.");
+                // System.out.println("Controller is ready.");
                 return true;
-            } else if (responseCode == 503) {
-                // Controller is not ready
-                System.out.println("Controller is not ready.");
-            } else {
+            }
+            else if (responseCode == 503) {
+            // Controller is not ready
+            // System.out.println("Controller is not ready.");
+            }
+            else {
                 System.err.println("Unexpected response code from readiness check: " + responseCode);
             }
         } catch (IOException e) {
@@ -163,8 +196,7 @@ public class Producer {
                     return gson.fromJson(response, mapType);
                 }
             } else {
-                System.err.println(
-                        "Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
+                // System.err.println("Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
             }
         } catch (IOException e) {
             System.err.println("Error fetching metadata for topic " + topicName + ": " + e.getMessage());

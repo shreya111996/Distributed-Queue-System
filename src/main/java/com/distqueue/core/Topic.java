@@ -29,6 +29,10 @@ public class Topic {
         return replicationFactor;
     }
 
+    public Map<Integer, Partition> getPartitions() {
+        return partitions;
+    }
+
     public Partition getPartition(int partitionId) {
         return partitions.get(partitionId);
     }

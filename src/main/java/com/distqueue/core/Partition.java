@@ -7,10 +7,14 @@ import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import com.distqueue.metadata.PartitionMetadata;
+
 public class Partition implements Serializable {
     private static final long serialVersionUID = 1L;
     private final int partitionId;
     private final int replicationFactor;
+    private PartitionMetadata partitionMetadata;
+
     private final Queue<Message> messageQueue = new ConcurrentLinkedQueue<>();
     private final AtomicInteger offset = new AtomicInteger(0);
     private boolean isLeader;
@@ -32,6 +36,14 @@ public class Partition implements Serializable {
         this.isLeader = isLeader;
     }
 
+    public PartitionMetadata getPartitionMetadata() {
+        return partitionMetadata;
+    }
+
+    public void setPartitionMetadata(PartitionMetadata partitionMetadata) {
+        this.partitionMetadata = partitionMetadata;
+    }
+
     public boolean isLeader() {
         return isLeader;
     }
@@ -42,12 +54,13 @@ public class Partition implements Serializable {
         // No replication here; handled externally
     }
 
-    public List<Message> getMessages(int startOffset) {
+    public List<Message> getMessages(long startOffset) {
         List<Message> messages = new ArrayList<>(messageQueue);
-        if (startOffset >= messages.size()) {
+        long messagesSize = messages.size();
+        if (startOffset >= messagesSize) {
             return new ArrayList<>();
         }
-        return messages.subList(startOffset, messages.size());
+        return messages.subList((int)startOffset, messages.size());
     }
 
     public int getCurrentOffset() {

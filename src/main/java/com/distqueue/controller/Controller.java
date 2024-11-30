@@ -39,7 +39,7 @@ public class Controller {
         server.createContext("/getBrokerInfo", new GetBrokerInfoHandler());
         server.createContext("/getAllBrokers", new GetAllBrokersHandler());
         server.createContext("/brokers/active", new ActiveBrokersHandler());
-        server.createContext("/readiness", new ReadinessHandler()); // New endpoint for readiness check
+        server.createContext("/readiness", new ReadinessHandler());
 
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
@@ -159,7 +159,7 @@ public class Controller {
                 } else {
                     response = "{\"error\": \"No metadata found for topic " + topicName + "\"}";
                     statusCode = 404;
-                    System.err.println("No metadata found for topic: " + topicName);
+                    //System.err.println("No metadata found for topic: " + topicName);
                 }
             } catch (Exception e) {
                 response = "{\"error\": \"Invalid request format or processing error.\"}";
@@ -283,7 +283,7 @@ public class Controller {
             os.write(response.getBytes());
             os.close();
 
-            System.out.println("Readiness check: " + response);
+            //System.out.println("Readiness check: " + response);
         }
     }
 
@@ -357,7 +357,7 @@ public class Controller {
             }
         }
 
-        System.out.println("Current broker count: " + brokerRegistry.size());
+        //System.out.println("Current broker count: " + brokerRegistry.size());
         if (isControllerReady()) {
             System.out.println("Controller is ready: All brokers registered.");
         }
@@ -486,21 +486,24 @@ public class Controller {
 
         Map<Integer, PartitionMetadata> partitionMetadataMap = new HashMap<>();
 
+        // Partition and replication logic
         for (int partitionId = 0; partitionId < numPartitions; partitionId++) {
             PartitionMetadata partitionMetadata = new PartitionMetadata(partitionId, replicationFactor);
+
             List<Integer> brokerIds = new ArrayList<>(brokerRegistry.keySet());
             int leaderIndex = partitionId % brokerIds.size();
             int leaderId = brokerIds.get(leaderIndex);
             partitionMetadata.setLeaderId(leaderId);
 
+            // Add followers, ensuring no duplicates and no self-replication
             for (int i = 1; i < replicationFactor && i < brokerIds.size(); i++) {
                 int followerId = brokerIds.get((leaderIndex + i) % brokerIds.size());
-                partitionMetadata.addFollower(followerId);
+                if (followerId != leaderId && !partitionMetadata.getFollowerIds().contains(followerId)) {
+                    partitionMetadata.addFollower(followerId);
+                }
             }
-
-            partitionMetadataMap.put(partitionId, partitionMetadata);
+                partitionMetadataMap.put(partitionId, partitionMetadata);
         }
-
         metadata.put(topicName, partitionMetadataMap);
         System.out.println("Topic " + topicName + " created with metadata: " + partitionMetadataMap);
 
