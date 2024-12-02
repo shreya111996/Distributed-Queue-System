@@ -79,6 +79,7 @@ public class Producer {
 
         long offset = getNextOffset(topic, partitionId);
         Message message = new Message(topic, partitionId, offset, payload);
+        // System.out.println("Sending message to topic " + topic + ", partition " + partitionId + ", offset " + offset);
         publishMessage(leaderInfo, message);
     }
 
@@ -114,7 +115,7 @@ public class Producer {
             if (isControllerReady()) {
                 return true;
             }
-            System.out.println("Controller not ready. Retrying in " + (delay / 1000) + " seconds...");
+            //System.out.println("Controller not ready. Retrying in " + (delay / 1000) + " seconds...");
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
@@ -141,7 +142,7 @@ public class Producer {
 
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                System.out.println("Message sent successfully to broker " + leaderInfo.getHost());
+                // System.out.println("Message sent successfully to broker " + leaderInfo.getHost());
             } else {
                 System.err.println("Failed to send message, response code: " + responseCode);
             }

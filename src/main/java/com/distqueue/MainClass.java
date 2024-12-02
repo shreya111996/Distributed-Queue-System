@@ -4,6 +4,7 @@ import com.distqueue.broker.Broker;
 import com.distqueue.controller.Controller;
 import com.distqueue.producer.Producer;
 import com.distqueue.consumer.Consumer;
+import com.distqueue.consumer.ConsumerThread;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -56,7 +57,7 @@ public class MainClass {
 
                 // Send messages to each topic
                 for (String topicName : topicNames) {
-                    for (int i = 1; i <= 10; i++) {
+                    for (int i = 1; i <= 25; i++) {
                         String messageContent = "Message " + i + " for " + topicName;
                         producer.send(topicName, messageContent.getBytes());
                         System.out.println("Sent to " + topicName + ": " + messageContent);
@@ -73,17 +74,25 @@ public class MainClass {
                 int controllerPortConsumer = Integer.parseInt(System.getenv("CONTROLLER_PORT"));
                 Consumer consumer = new Consumer(controllerHostConsumer, controllerPortConsumer);
 
-                // We assume the consumer consumes from all partitions of a given topic in order
-                // For simplicity, we'll consume from all partitions sequentially.
-                // Loop through each topic and its partitions
-                
-                for (String topicName : topicNames) {
-                    // For each topic, consume messages from each partition sequentially
-                    for (int partitionId = 0; partitionId < 3; partitionId++) { // Assuming 3 partitions per topic
-                        consumer.consume(topicName, partitionId); // Consume from each partition
-                    }
+                // Create and start consumer threads for each topic
+                Thread consumer1Thread = new Thread(new ConsumerThread(1, topicNames[0], consumer)); // Consumer for TopicA
+                Thread consumer2Thread = new Thread(new ConsumerThread(2, topicNames[1], consumer)); // Consumer for TopicB
+                Thread consumer3Thread = new Thread(new ConsumerThread(3, topicNames[2], consumer)); // Consumer for TopicC
+
+                consumer1Thread.start();
+                consumer2Thread.start();
+                consumer3Thread.start();
+
+                // Optionally, wait for all threads to finish
+                try {
+                    consumer1Thread.join();
+                    consumer2Thread.join();
+                    consumer3Thread.join();
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
                 }
-                break;
+
+                System.out.println("All consumers have finished consuming.");
 
             default:
                 System.err.println("Invalid ROLE specified. Use 'controller', 'broker', 'producer', or 'consumer'.");

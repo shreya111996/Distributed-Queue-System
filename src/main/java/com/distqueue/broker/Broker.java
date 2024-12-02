@@ -745,7 +745,7 @@ public class Broker {
                 // Get and log response code
                 int responseCode = conn.getResponseCode();
                 if (responseCode == 200) {
-                    System.out.println("Replicated message " + message.getOffset() + " to follower " + followerId);
+                    // System.out.println("Replicated message " + message.getOffset() + " to follower " + followerId);
                 } else {
                     System.err.println("Failed to replicate message to follower " + followerId + ". Response Code: "
                             + responseCode);
@@ -766,7 +766,7 @@ public class Broker {
             if (isControllerReady()) {
                 return true;
             }
-            System.out.println("Controller not ready. Retrying in " + (delay / 1000) + " seconds...");
+            //System.out.println("Controller not ready. Retrying in " + (delay / 1000) + " seconds...");
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
@@ -845,7 +845,7 @@ public class Broker {
         Map<Integer, PartitionMetadata> partitionMetadataMap = getMetadataCache().get(message.getTopic());
     
         if (partitionMetadataMap == null) {
-            System.err.println("Metadata not found for topic: " + message.getTopic());
+            //System.err.println("Metadata not found for topic: " + message.getTopic());
             return;
         }
     

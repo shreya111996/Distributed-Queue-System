@@ -8,7 +8,7 @@ public class Message implements Serializable {
     private static final long serialVersionUID = 1L;
 
     // Regular message fields
-    private final long offset; // Offset for message identification and ordering
+    private final long offset; // offsets are partition-specific, they are not globally unique across partitions
     private final byte[] payload;
     private final Instant timestamp;
     private final String topic;

@@ -78,7 +78,7 @@ public class Controller {
             os.write(response.getBytes());
             os.close();
 
-            System.out.println("Registered broker " + brokerId + " at " + host + ":" + port);
+            // System.out.println("Registered broker " + brokerId + " at " + host + ":" + port);
         }
     }
 
@@ -155,7 +155,7 @@ public class Controller {
                     Gson gson = new Gson();
                     response = gson.toJson(topicMetadata); // Serialize metadata to JSON
                     statusCode = 200;
-                    System.out.println("Metadata fetched for topic: " + topicName);
+                    //System.out.println("Metadata fetched for topic: " + topicName);
                 } else {
                     response = "{\"error\": \"No metadata found for topic " + topicName + "\"}";
                     statusCode = 404;
@@ -458,7 +458,7 @@ public class Controller {
             if (isControllerReady()) {
                 break;
             }
-            System.err.println("Controller not ready. Retrying... (" + (i + 1) + "/" + retries + ")");
+            // System.err.println("Controller not ready. Retrying... (" + (i + 1) + "/" + retries + ")");
             try {
                 Thread.sleep(delay);
                 delay *= 2; // Exponential backoff
