@@ -507,6 +507,19 @@ public class Controller {
         metadata.put(topicName, partitionMetadataMap);
         System.out.println("Topic " + topicName + " created with metadata: " + partitionMetadataMap);
 
+        /**
+         * Partition 0:
+            Leader: Broker1.
+            Follower: Broker2 (next broker in the round-robin sequence).
+            Partition 1:
+            Leader: Broker2.
+            Follower: Broker3.
+            Partition 2:
+            Leader: Broker3.
+            Follower: Broker1.
+         * 
+         */
+        
         // Notify brokers of their leadership
         notifyBrokersOfNewTopic(topicName, partitionMetadataMap);
 
