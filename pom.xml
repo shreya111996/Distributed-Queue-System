@@ -1,6 +1,14 @@
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/maven-v4_0_0.xsd">
   <modelVersion>4.0.0</modelVersion>
+  
+  <parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.0.0</version> <!-- Replace with the version you prefer -->
+    <relativePath /> <!-- lookup parent from repository -->
+  </parent>
+
   <groupId>com.distqueue</groupId>
   <artifactId>distqueue-application</artifactId>
   <packaging>jar</packaging>
@@ -9,6 +17,12 @@
   <url>http://maven.apache.org</url>
 
   <dependencies>
+    <!-- Spring Boot Starter Web (includes Spring MVC and Tomcat) -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+
     <!-- JUnit 5 for unit tests -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
@@ -29,63 +43,42 @@
       <version>4.4.11</version>
     </dependency>
     <dependency>
-        <groupId>com.sun.net.httpserver</groupId>
-        <artifactId>http</artifactId>
-        <version>20070405</version>
+      <groupId>com.sun.net.httpserver</groupId>
+      <artifactId>http</artifactId>
+      <version>20070405</version>
     </dependency>
-        <dependency>
-        <groupId>com.google.code.gson</groupId>
-        <artifactId>gson</artifactId>
-        <version>2.11.0</version>
+    <dependency>
+      <groupId>com.google.code.gson</groupId>
+      <artifactId>gson</artifactId>
+      <version>2.11.0</version>
     </dependency>
-    
   </dependencies>
 
   <build>
     <plugins>
-        <!-- Maven Jar Plugin to create a Jar with a Main class -->
-        <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-jar-plugin</artifactId>
-            <version>3.2.0</version>
-            <configuration>
-                <archive>
-                    <manifest>
-                        <addClasspath>true</addClasspath>
-                        <mainClass>com.distqueue.MainClass</mainClass> 
-                    </manifest>
-                </archive>
-            </configuration>
-        </plugin>
-
-        <!-- Spring Boot Maven Plugin to run the application -->
-        <plugin>
-          <groupId>org.springframework.boot</groupId>
-          <artifactId>spring-boot-maven-plugin</artifactId>
-        </plugin>
-
-        <!-- Maven Shade Plugin to create a fat JAR -->
-        <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-shade-plugin</artifactId>
-            <version>3.4.1</version>
-            <executions>
-                <execution>
-                    <phase>package</phase>
-                    <goals>
-                        <goal>shade</goal>
-                    </goals>
-                    <configuration>
-                        <transformers>
-                            <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                <mainClass>com.distqueue.MainClass</mainClass>
-                            </transformer>
-                        </transformers>
-                    </configuration>
-                </execution>
-            </executions>
-        </plugin>
-        
+      <!-- Spring Boot Maven Plugin to run the application and create a fat JAR -->
+      <plugin>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-maven-plugin</artifactId>
+        <configuration>
+          <mainClass>com.distqueue.MainClass</mainClass>
+        </configuration>
+      </plugin>
+      
+      <!-- Maven Jar Plugin (optional if using Spring Boot Maven Plugin) -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.2.0</version>
+        <configuration>
+          <archive>
+            <manifest>
+              <addClasspath>true</addClasspath>
+              <mainClass>com.distqueue.MainClass</mainClass>
+            </manifest>
+          </archive>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 </project>

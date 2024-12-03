@@ -1,6 +1,8 @@
 package com.distqueue.producer;
 
 import com.distqueue.core.Message;
+import com.distqueue.logging.LogMessage;
+import com.distqueue.logging.LogRepository;
 import com.distqueue.metadata.PartitionMetadata;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
@@ -10,8 +12,15 @@ import java.lang.reflect.Type;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+import org.springframework.http.server.reactive.HttpHandler;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
+import org.springframework.web.service.annotation.HttpExchange;
 
 public class Producer {
 
@@ -20,7 +29,10 @@ public class Producer {
     private Map<String, Integer> partitionCounter = new ConcurrentHashMap<>(); // track the current partition for
                                                                                // round-robin
     private Map<String, Map<Integer, Long>> partitionOffsetMap = new ConcurrentHashMap<>(); // track the current offset
+    private int messageCount = 0; // Counter for messages produced
                                                                                             // for each partition
+    private long startTime = System.currentTimeMillis(); // Start time for throughput calculation
+    private long totalLatency = 0; // Total latency for calculating average latency
 
     public Producer(String controllerHost, int controllerPort) {
         this.controllerHost = controllerHost;
@@ -78,9 +90,12 @@ public class Producer {
         }
 
         long offset = getNextOffset(topic, partitionId);
+        long productionTimestamp = System.currentTimeMillis();
         Message message = new Message(topic, partitionId, offset, payload);
         // System.out.println("Sending message to topic " + topic + ", partition " + partitionId + ", offset " + offset);
         publishMessage(leaderInfo, message);
+        logLatency(productionTimestamp); // Log latency
+        logThroughput(); // Log throughput
     }
 
     private long getNextOffset(String topic, int partition) {
@@ -143,6 +158,7 @@ public class Producer {
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 // System.out.println("Message sent successfully to broker " + leaderInfo.getHost());
+
             } else {
                 System.err.println("Failed to send message, response code: " + responseCode);
             }
@@ -257,6 +273,65 @@ public class Producer {
             e.printStackTrace();
         }
     }
+
+    private void logThroughput() {
+        long currentTime = System.currentTimeMillis();
+        long elapsedTime = currentTime - startTime;
+        if (elapsedTime > 0) {
+            double throughput = (messageCount * 1000.0) / elapsedTime; // Messages per second
+            String logMessage = "Throughput: " + throughput + " messages/second";
+            LogRepository.addLog("Producer", logMessage);
+        }
+    }
+
+    private void logLatency(long productionTimestamp) {
+        long consumptionTimestamp = System.currentTimeMillis();
+        long latency = consumptionTimestamp - productionTimestamp;
+        totalLatency += latency;
+        double averageLatency = totalLatency / (double) messageCount;
+        String logMessage = "End-to-End Latency: " + latency + " ms (Average: " + averageLatency + " ms)";
+        LogRepository.addLog("Producer", logMessage);
+    }
+
+    // class ProducerLogsStreamHandler implements HttpHandler {
+    //     @Override
+    //     public void handle(HttpExchange exchange) throws IOException {
+    //         // Set the response type to event-stream for SSE
+    //         exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+    //         exchange.sendResponseHeaders(200, 0);
+    
+    //         OutputStream os = exchange.getResponseBody();
+            
+    //         // Keep the connection open and send log data periodically
+    //         while (true) {
+    //                 // Get the logs for the controller (you can modify this to get logs from other components if needed)
+    //             List<LogMessage> producerLogs = LogRepository.getLogsBySource("Controller");
+                
+    //             // Map LogMessages to Strings, extracting only the message or any other desired info
+    //             List<String> logMessages = producerLogs.stream()
+    //                                                     .map(log -> "Timestamp: " + log.getTimestamp() + " | " + log.getMessage())
+    //                                                     .collect(Collectors.toList());
+
+    //             // If there are new logs, send them to the client via SSE
+    //             if (!logMessages.isEmpty()) {
+    //                 // Join the logs into a single string, one per line, with each log prefixed by "data:"
+    //                 String response = logMessages.stream()
+    //                                             .map(log -> "data: " + log + "\n\n") // Format as SSE event
+    //                                             .collect(Collectors.joining());
+    //                 os.write(response.getBytes());
+    //                 os.flush();
+    //             }
+
+    //             // Sleep for a while before sending new logs (simulate waiting for new logs)
+    //             try {
+    //                 Thread.sleep(5000); // Wait for 5 seconds before sending new data
+    //             } catch (InterruptedException e) {
+    //                 Thread.currentThread().interrupt();
+    //             }
+    //         }
+    //     }
+    // }
+
 
     public static class BrokerInfo {
         private final String host;

@@ -1,5 +1,7 @@
 package com.distqueue.controller;
 
+import com.distqueue.logging.LogMessage;
+import com.distqueue.logging.LogRepository;
 import com.distqueue.metadata.PartitionMetadata;
 import com.google.gson.Gson;
 import com.sun.net.httpserver.HttpServer;
@@ -12,6 +14,7 @@ import java.net.InetSocketAddress;
 import java.net.URL;
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.stream.Collectors;
 
 public class Controller {
 
@@ -19,9 +22,13 @@ public class Controller {
     private final Map<Integer, BrokerInfo> brokerRegistry = new ConcurrentHashMap<>();
     private final Map<Integer, Long> brokerHeartbeats = new ConcurrentHashMap<>();
     private final Map<String, Map<Integer, PartitionMetadata>> metadata = new ConcurrentHashMap<>();
+    private int registeredBrokerCount = 0;
     private final int expectedBrokerCount = 3; // Set this based on your setup
     private final long heartbeatInterval = 2000L; // Expected heartbeat interval in milliseconds
     private final long heartbeatTimeout = 5000L; // Timeout to consider a broker as failed
+    private int requestCount = 0; // Counter for requests handled
+    private long startTime = System.currentTimeMillis(); // Start time for throughput calculation
+    private long totalLatency = 0; // Total latency for calculating average latency
 
     public Controller(int port) {
         this.controllerPort = port;
@@ -38,9 +45,12 @@ public class Controller {
         server.createContext("/getMetadata", new GetMetadataHandler());
         server.createContext("/getBrokerInfo", new GetBrokerInfoHandler());
         server.createContext("/getAllBrokers", new GetAllBrokersHandler());
+        server.createContext("/getRegisteredBrokerCount", new GetRegisteredBrokerCountHandler());
         server.createContext("/brokers/active", new ActiveBrokersHandler());
+        server.createContext("/brokers/active/count", new ActiveBrokerCountHandler());
         server.createContext("/readiness", new ReadinessHandler());
-
+        server.createContext("/logs/controller/stream", new ControllerLogsStreamHandler());
+        
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
 
@@ -56,6 +66,8 @@ public class Controller {
     class RegisterBrokerHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            long startTime = System.currentTimeMillis();
+            requestCount++; // Increment the request count
             BufferedReader in = new BufferedReader(new InputStreamReader(exchange.getRequestBody()));
             String line;
             StringBuilder body = new StringBuilder();
@@ -71,14 +83,21 @@ public class Controller {
 
             BrokerInfo brokerInfo = new BrokerInfo(host, port, brokerId, System.currentTimeMillis());
             registerBroker(brokerId, brokerInfo);
-
+            registeredBrokerCount++; // Increment the counter
             String response = "Broker registered";
             exchange.sendResponseHeaders(200, response.length());
             OutputStream os = exchange.getResponseBody();
             os.write(response.getBytes());
+            long endTime = System.currentTimeMillis();
+            String logMessage = "Registered broker " + brokerId + " at " + host + ":" + port + " in "
+                    + (endTime - startTime) + " ms";
+            LogRepository.addLog("Controller", logMessage);
+            logLatency(startTime); // Log latency
+            logThroughput(); // Log throughput
             os.close();
 
-            // System.out.println("Registered broker " + brokerId + " at " + host + ":" + port);
+            // System.out.println("Registered broker " + brokerId + " at " + host + ":" +
+            // port);
         }
     }
 
@@ -93,6 +112,8 @@ public class Controller {
             exchange.sendResponseHeaders(200, response.length());
             OutputStream os = exchange.getResponseBody();
             os.write(response.getBytes());
+            // logLatency(startTime); // Log latency
+            // logThroughput(); // Log throughput
             os.close();
         }
     }
@@ -100,6 +121,7 @@ public class Controller {
     class CreateTopicHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            long startTime = System.currentTimeMillis();
             BufferedReader in = new BufferedReader(new InputStreamReader(exchange.getRequestBody()));
             String line;
             StringBuilder body = new StringBuilder();
@@ -132,7 +154,17 @@ public class Controller {
 
             if (success) {
                 System.out.println("Topic " + topicName + " created with " + numPartitions + " partitions");
+                long endTime = System.currentTimeMillis();
+
+                String logMessage = "Topic " + topicName + " created with " + numPartitions + " partitions in "
+                        + (endTime - startTime) + " ms";
+                LogRepository.addLog("Controller", logMessage);
+                String logMessage1 = "Topic creation took " + (endTime - startTime) + " ms";
+                LogRepository.addLog("Controller", logMessage1);
             }
+
+            logLatency(startTime); // Log latency
+            logThroughput(); // Log throughput
         }
     }
 
@@ -142,11 +174,13 @@ public class Controller {
         public void handle(HttpExchange exchange) throws IOException {
             String response;
             int statusCode;
+            long startTime = System.currentTimeMillis();
+            String topicName = null;
 
             try {
                 // Extract topic name from query
                 String query = exchange.getRequestURI().getQuery();
-                String topicName = query.split("=")[1];
+                topicName = query.split("=")[1];
 
                 // Retrieve topic metadata
                 Map<Integer, PartitionMetadata> topicMetadata = metadata.get(topicName);
@@ -155,11 +189,11 @@ public class Controller {
                     Gson gson = new Gson();
                     response = gson.toJson(topicMetadata); // Serialize metadata to JSON
                     statusCode = 200;
-                    //System.out.println("Metadata fetched for topic: " + topicName);
+                    // System.out.println("Metadata fetched for topic: " + topicName);
                 } else {
                     response = "{\"error\": \"No metadata found for topic " + topicName + "\"}";
                     statusCode = 404;
-                    //System.err.println("No metadata found for topic: " + topicName);
+                    // System.err.println("No metadata found for topic: " + topicName);
                 }
             } catch (Exception e) {
                 response = "{\"error\": \"Invalid request format or processing error.\"}";
@@ -173,6 +207,8 @@ public class Controller {
 
             try (OutputStream os = exchange.getResponseBody()) {
                 os.write(response.getBytes());
+                // logLatency(startTime); // Log latency
+                // logThroughput(); // Log throughput
             }
         }
     }
@@ -215,7 +251,7 @@ public class Controller {
     }
 
     // Handler for /brokers/active endpoint
-    private class ActiveBrokersHandler implements HttpHandler {
+    class ActiveBrokersHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
 
@@ -247,27 +283,76 @@ public class Controller {
                 exchange.sendResponseHeaders(405, -1); // Method Not Allowed
             }
         }
+    }
 
-        private List<BrokerInfo> getAllBrokers() {
-            return new ArrayList<>(brokerRegistry.values());
+    private List<BrokerInfo> getAllBrokers() {
+        return new ArrayList<>(brokerRegistry.values());
+    }
+
+    private List<BrokerInfo> getActiveBrokers(List<BrokerInfo> allBrokers) {
+        List<BrokerInfo> activeBrokers = new ArrayList<>();
+        long currentTime = System.currentTimeMillis();
+
+        for (BrokerInfo brokerInfo : allBrokers) {
+            int brokerId = brokerInfo.getBrokerId();
+
+            // Fetch the last heartbeat from the separate map
+            long lastHeartbeat = brokerHeartbeats.getOrDefault(brokerId, 0L);
+
+            if (currentTime - lastHeartbeat < heartbeatTimeout) {
+                activeBrokers.add(brokerInfo);
+            }
         }
 
-        private List<BrokerInfo> getActiveBrokers(List<BrokerInfo> allBrokers) {
-            List<BrokerInfo> activeBrokers = new ArrayList<>();
-            long currentTime = System.currentTimeMillis();
+        return activeBrokers;
+    }
 
-            for (BrokerInfo brokerInfo : allBrokers) {
-                int brokerId = brokerInfo.getBrokerId();
-
-                // Fetch the last heartbeat from the separate map
-                long lastHeartbeat = brokerHeartbeats.getOrDefault(brokerId, 0L);
-
-                if (currentTime - lastHeartbeat < heartbeatTimeout) {
-                    activeBrokers.add(brokerInfo);
+    private class GetRegisteredBrokerCountHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if ("GET".equals(exchange.getRequestMethod())) {
+                String response = "{\"registeredBrokerCount\": " + registeredBrokerCount + "}";
+                exchange.sendResponseHeaders(200, response.getBytes().length);
+                try (OutputStream os = exchange.getResponseBody()) {
+                    os.write(response.getBytes());
                 }
+            } else {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
             }
+        }
+    }
 
-            return activeBrokers;
+    // Handler for /brokers/active/count endpoint
+    class ActiveBrokerCountHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if ("GET".equalsIgnoreCase(exchange.getRequestMethod())) {
+                // Add CORS headers
+                exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+                exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+                exchange.getResponseHeaders().set("Content-Type", "application/json");
+
+                try {
+                    // Fetch all brokers
+                    List<BrokerInfo> allBrokers = getAllBrokers();
+
+                    // Filter active brokers
+                    List<BrokerInfo> activeBrokers = getActiveBrokers(allBrokers);
+
+                    // Prepare response with count
+                    String response = "{\"activeBrokerCount\": " + activeBrokers.size() + "}";
+                    exchange.sendResponseHeaders(200, response.getBytes().length);
+
+                    try (OutputStream os = exchange.getResponseBody()) {
+                        os.write(response.getBytes());
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                    exchange.sendResponseHeaders(500, -1); // Internal Server Error
+                }
+            } else {
+                exchange.sendResponseHeaders(405, -1); // Method Not Allowed
+            }
         }
     }
 
@@ -283,7 +368,7 @@ public class Controller {
             os.write(response.getBytes());
             os.close();
 
-            //System.out.println("Readiness check: " + response);
+            // System.out.println("Readiness check: " + response);
         }
     }
 
@@ -320,7 +405,6 @@ public class Controller {
         public long getLastHeartbeat() {
             return lastHeartbeat;
         }
-
     }
 
     // Existing methods...
@@ -357,7 +441,7 @@ public class Controller {
             }
         }
 
-        //System.out.println("Current broker count: " + brokerRegistry.size());
+        // System.out.println("Current broker count: " + brokerRegistry.size());
         if (isControllerReady()) {
             System.out.println("Controller is ready: All brokers registered.");
         }
@@ -458,7 +542,8 @@ public class Controller {
             if (isControllerReady()) {
                 break;
             }
-            // System.err.println("Controller not ready. Retrying... (" + (i + 1) + "/" + retries + ")");
+            // System.err.println("Controller not ready. Retrying... (" + (i + 1) + "/" +
+            // retries + ")");
             try {
                 Thread.sleep(delay);
                 delay *= 2; // Exponential backoff
@@ -502,24 +587,24 @@ public class Controller {
                     partitionMetadata.addFollower(followerId);
                 }
             }
-                partitionMetadataMap.put(partitionId, partitionMetadata);
+            partitionMetadataMap.put(partitionId, partitionMetadata);
         }
         metadata.put(topicName, partitionMetadataMap);
         System.out.println("Topic " + topicName + " created with metadata: " + partitionMetadataMap);
 
         /**
          * Partition 0:
-            Leader: Broker1.
-            Follower: Broker2 (next broker in the round-robin sequence).
-            Partition 1:
-            Leader: Broker2.
-            Follower: Broker3.
-            Partition 2:
-            Leader: Broker3.
-            Follower: Broker1.
+         * Leader: Broker1.
+         * Follower: Broker2 (next broker in the round-robin sequence).
+         * Partition 1:
+         * Leader: Broker2.
+         * Follower: Broker3.
+         * Partition 2:
+         * Leader: Broker3.
+         * Follower: Broker1.
          * 
          */
-        
+
         // Notify brokers of their leadership
         notifyBrokersOfNewTopic(topicName, partitionMetadataMap);
 
@@ -543,4 +628,74 @@ public class Controller {
             }
         }
     }
+
+    private void logThroughput() {
+        long currentTime = System.currentTimeMillis();
+        long elapsedTime = currentTime - startTime;
+        if (elapsedTime > 0) {
+            double throughput = (requestCount * 1000.0) / elapsedTime; // Requests per second
+            String logMessage = "Throughput: " + throughput + " requests/second";
+            LogRepository.addLog("Controller", logMessage);
+        }
+    }
+
+    private void logLatency(long startTime) {
+        long endTime = System.currentTimeMillis();
+        long latency = endTime - startTime;
+        totalLatency += latency;
+        double averageLatency = totalLatency / (double) requestCount;
+        String logMessage = "Request Latency: " + latency + " ms (Average: " + averageLatency + " ms)";
+        LogRepository.addLog("Controller", logMessage);
+    }
+
+    class ControllerLogsStreamHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+
+            // Set CORS headers to allow requests from any origin (or specify your frontend URL for security)
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+            
+            // Set the response type to event-stream for SSE
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+    
+            OutputStream os = exchange.getResponseBody();
+            
+            // Keep the connection open and send log data periodically
+            while (true) {
+                    // Get the logs for the controller (you can modify this to get logs from other components if needed)
+                List<LogMessage> controllerLogs = LogRepository.getLogsBySource("Controller");
+                
+                // Map LogMessages to a JSON structure
+                List<String> logMessages = controllerLogs.stream()
+                .map(log -> {
+                    // Create a JSON object for each log
+                    return String.format("{\"timestamp\": \"%s\", \"message\": \"%s\"}",
+                            log.getTimestamp(), log.getMessage());
+                })
+                .collect(Collectors.toList());
+
+                // If there are new logs, send them to the client via SSE
+                if (!logMessages.isEmpty()) {
+                    // Join the logs into a single string, one per line, with each log prefixed by "data:"
+                    String response = logMessages.stream()
+                            .map(log -> "data: " + log + "\n\n") // Format as SSE event
+                            .collect(Collectors.joining());
+                    os.write(response.getBytes());
+                    os.flush();
+                }
+
+                // Sleep for a while before sending new logs (simulate waiting for new logs)
+                try {
+                    Thread.sleep(10000); // Wait for 10 seconds before sending new data
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+    }
+
+    
 }

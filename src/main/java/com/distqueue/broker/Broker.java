@@ -4,6 +4,8 @@ import com.distqueue.adapters.MessageAdapter;
 import com.distqueue.core.Message;
 import com.distqueue.core.Partition;
 import com.distqueue.core.Topic;
+import com.distqueue.logging.LogMessage;
+import com.distqueue.logging.LogRepository;
 import com.distqueue.metadata.PartitionMetadata;
 
 import com.distqueue.protocols.GossipProtocol;
@@ -75,6 +77,8 @@ public class Broker {
         server.createContext("/receiveGossip", new ReceiveGossipHandler());
         server.createContext("/brokers/leader", new LeaderBrokerHandler());
         server.createContext("/longPolling", new LongPollingHandler());
+        server.createContext("/logs/broker/stream", new BrokerLogsStreamHandler());
+        
         server.setExecutor(Executors.newCachedThreadPool());
         server.start();
 
@@ -159,10 +163,13 @@ public class Broker {
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
+            
             if (!"POST".equals(exchange.getRequestMethod())) {
                 exchange.sendResponseHeaders(405, -1); // Method Not Allowed
                 return;
             }
+
+            long startTime = System.currentTimeMillis();
             try (InputStreamReader reader = new InputStreamReader(exchange.getRequestBody(), StandardCharsets.UTF_8);
              OutputStream os = exchange.getResponseBody()) {
 
@@ -187,6 +194,10 @@ public class Broker {
                 String errorMessage = "Internal server error: " + e.getMessage();
                 exchange.sendResponseHeaders(500, errorMessage.getBytes(StandardCharsets.UTF_8).length);
                 exchange.getResponseBody().write(errorMessage.getBytes(StandardCharsets.UTF_8)); // Send error message in response
+            } finally {
+                long endTime = System.currentTimeMillis();
+                String logMessage = "Message replication took " + (endTime - startTime) + " ms";
+                LogRepository.addLog("Broker", logMessage);
             }
         }
     }
@@ -479,6 +490,7 @@ public class Broker {
             String response = "OK";
             exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
             exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=UTF-8");
+            long startTime = System.currentTimeMillis();
 
             try {
                 exchange.sendResponseHeaders(200, response.length());
@@ -491,6 +503,12 @@ public class Broker {
                 exchange.sendResponseHeaders(500, errorResponse.length());
                 try (OutputStream os = exchange.getResponseBody()) {
                     os.write(errorResponse.getBytes());
+                }
+                finally {
+                    long endTime = System.currentTimeMillis();
+                    
+                    String logMessage = "Health check request processing took " + (endTime - startTime) + " ms";
+                    LogRepository.addLog("Broker", logMessage);
                 }
             }
         }
@@ -1015,6 +1033,55 @@ public class Broker {
         }
         return null;
 
+    }
+
+    class BrokerLogsStreamHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+
+            // Set CORS headers to allow requests from any origin (or specify your frontend URL for security)
+            exchange.getResponseHeaders().set("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Methods", "GET");
+            exchange.getResponseHeaders().set("Access-Control-Allow-Headers", "Content-Type");
+        
+            // Set the response type to event-stream for SSE
+            exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+            exchange.sendResponseHeaders(200, 0);
+    
+            OutputStream os = exchange.getResponseBody();
+            
+            // Keep the connection open and send log data periodically
+            while (true) {
+                    // Get the logs for the controller (you can modify this to get logs from other components if needed)
+                List<LogMessage> brokerLogs = LogRepository.getLogsBySource("Broker");
+                
+                // Map LogMessages to a JSON structure
+                List<String> logMessages = brokerLogs.stream()
+                .map(log -> {
+                    // Create a JSON object for each log
+                    return String.format("{\"timestamp\": \"%s\", \"message\": \"%s\"}",
+                            log.getTimestamp(), log.getMessage());
+                })
+                .collect(Collectors.toList());
+
+                // If there are new logs, send them to the client via SSE
+                if (!logMessages.isEmpty()) {
+                    // Join the logs into a single string, one per line, with each log prefixed by "data:"
+                    String response = logMessages.stream()
+                            .map(log -> "data: " + log + "\n\n") // Format as SSE event
+                            .collect(Collectors.joining());
+                    os.write(response.getBytes());
+                    os.flush();
+                }
+
+                // Sleep for a while before sending new logs (simulate waiting for new logs)
+                try {
+                    Thread.sleep(5000); // Wait for 5 seconds before sending new data
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
     }
 
     // BrokerInfo class to store broker's network information

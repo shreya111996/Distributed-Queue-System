@@ -2,6 +2,8 @@ package com.distqueue.consumer;
 
 import com.distqueue.adapters.MessageAdapter;
 import com.distqueue.core.Message;
+import com.distqueue.logging.LogMessage;
+import com.distqueue.logging.LogRepository;
 import com.distqueue.metadata.PartitionMetadata;
 import com.distqueue.producer.Producer.BrokerInfo;
 import com.google.gson.Gson;
@@ -16,6 +18,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
+
+import org.springframework.http.server.reactive.HttpHandler;
+import org.springframework.web.service.annotation.HttpExchange;
+
 import java.util.Comparator;
 
 public class Consumer {
@@ -26,6 +33,10 @@ public class Consumer {
                                                                                    // composite keys
     // private static final String BROKER_API_URL =
     // "http://localhost:8090/brokers/active"; // Change URL if necessary
+
+    private int messageCount = 0; // Counter for messages consumed
+    private long startTime = System.currentTimeMillis(); // Start time for throughput calculation
+    private long totalLatency = 0; // Total latency for calculating average latency
 
     public Consumer(String controllerHost, int controllerPort) {
         this.controllerHost = controllerHost;
@@ -38,7 +49,7 @@ public class Consumer {
             System.err.println("Controller not ready. Exiting consume operation.");
             return;
         }
-    
+
         long lastOffset = 0; // Start from the beginning of the partition
         while (true) {
             try {
@@ -49,14 +60,14 @@ public class Consumer {
                     Thread.sleep(5000); // Retry after delay
                     continue;
                 }
-    
+
                 boolean success = false;
-    
+
                 // Try fetching messages from any available partition
                 for (Map.Entry<Integer, PartitionMetadata> entry : topicMetadata.entrySet()) {
                     int partitionId = entry.getKey();
                     PartitionMetadata partitionMetadata = entry.getValue();
-    
+
                     // Attempt to fetch messages from the leader broker first
                     success = fetchMessagesFromBroker(partitionMetadata, topic, partitionId, lastOffset);
                     if (!success) {
@@ -65,7 +76,8 @@ public class Consumer {
                         for (int followerId : followers) {
                             BrokerInfo followerInfo = fetchBrokerInfo(followerId);
                             if (followerInfo != null) {
-                                System.out.println("Attempting to consume from follower broker: " + followerInfo.getHost());
+                                System.out.println(
+                                        "Attempting to consume from follower broker: " + followerInfo.getHost());
                                 success = fetchMessages(followerInfo, topic, partitionId, lastOffset);
                                 if (success) {
                                     break; // Exit the loop if successful
@@ -73,13 +85,14 @@ public class Consumer {
                             }
                         }
                     }
-    
-                    // If the current partition failed (even after trying followers), try the next partition
+
+                    // If the current partition failed (even after trying followers), try the next
+                    // partition
                     if (success) {
                         break; // If we succeed with any partition, break out of the loop
                     }
                 }
-    
+
                 // If all partitions fail, refresh metadata and retry
                 if (!success) {
                     System.err.println("All brokers failed for topic " + topic + ". Retrying...");
@@ -94,10 +107,16 @@ public class Consumer {
                     Thread.currentThread().interrupt();
                 }
             }
+            finally {
+                // Log aggregated metrics after consumption of all messages
+                logThroughput();
+                logAverageLatency();
+            }
         }
     }
 
-    private boolean fetchMessagesFromBroker(PartitionMetadata partitionMetadata, String topic, int partitionId, long lastOffset) {
+    private boolean fetchMessagesFromBroker(PartitionMetadata partitionMetadata, String topic, int partitionId,
+            long lastOffset) {
         BrokerInfo leaderInfo = fetchBrokerInfo(partitionMetadata.getLeaderId());
         if (leaderInfo == null) {
             System.err.println("Leader broker info not found for broker ID " + partitionMetadata.getLeaderId());
@@ -105,7 +124,6 @@ public class Consumer {
         }
         return fetchMessages(leaderInfo, topic, partitionId, lastOffset);
     }
-
 
     private boolean fetchMessages(BrokerInfo brokerInfo, String topic, int partitionId, long lastOffset) {
         try {
@@ -117,7 +135,7 @@ public class Consumer {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setRequestMethod("GET");
             conn.setConnectTimeout(10000); // 10 seconds timeout for connection
-            conn.setReadTimeout(30000); // 30 seconds timeout for reading
+            conn.setReadTimeout(100000);
 
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
@@ -129,7 +147,8 @@ public class Consumer {
                 Gson gson = new GsonBuilder()
                         .registerTypeAdapter(Message.class, new MessageAdapter())
                         .create();
-                List<Message> messages = gson.fromJson(response, new TypeToken<List<Message>>() {}.getType());
+                List<Message> messages = gson.fromJson(response, new TypeToken<List<Message>>() {
+                }.getType());
 
                 if (messages == null || messages.isEmpty()) {
                     System.out.println("No new messages available in Partition " + partitionId);
@@ -147,8 +166,10 @@ public class Consumer {
                         System.out.println("Consumed message from Partition " + partitionId + ": "
                                 + new String(message.getPayload()));
                         lastOffset = message.getOffset() + 1; // Update the offset after processing
+                        messageCount++; // Increment the message count
+                        logLatency(message.getTimestamp().toEpochMilli()); // Log latency
                     } else {
-                        //System.out.println("Duplicate message skipped: " + messageKey);
+                        // System.out.println("Duplicate message skipped: " + messageKey);
                     }
                 }
                 return true; // Successfully consumed messages
@@ -163,7 +184,6 @@ public class Consumer {
             return false; // If an error occurs, return false
         }
     }
-    
 
     // Helper method to generate a composite key
     private String generateMessageKey(Message message) {
@@ -319,7 +339,294 @@ public class Consumer {
         }
         return null;
     }
+
+    private void logThroughput() {
+        long currentTime = System.currentTimeMillis();
+        long elapsedTime = currentTime - startTime;
+        if (elapsedTime > 0) {
+            double throughput = (messageCount * 1000.0) / elapsedTime; // Messages per second
+            String logMessage = "Throughput: " + throughput + " messages/second";
+            LogRepository.addLog("Consumer", logMessage);
+        }
+    }
+
+    private void logLatency(long productionTimestamp) {
+        long consumptionTimestamp = System.currentTimeMillis();
+        long latency = consumptionTimestamp - productionTimestamp;
+        totalLatency += latency;
+    }
+
+    private void logAverageLatency() {
+        double averageLatency = totalLatency / (double) messageCount;
+        String logMessage = "Average End-to-End Latency: " + averageLatency + " ms";
+        LogRepository.addLog("Controller", logMessage);
+    }
+
+
+    // class ConsumerLogsStreamHandler implements HttpHandler {
+    //     @Override
+    //     public void handle(HttpExchange exchange) throws IOException {
+    //         // Set the response type to event-stream for SSE
+    //         exchange.getResponseHeaders().set("Content-Type", "text/event-stream");
+    //         exchange.sendResponseHeaders(200, 0);
+    
+    //         OutputStream os = exchange.getResponseBody();
+            
+    //         // Keep the connection open and send log data periodically
+    //         while (true) {
+    //                 // Get the logs for the controller (you can modify this to get logs from other components if needed)
+    //             List<LogMessage> controllerLogs = LogRepository.getLogsBySource("Controller");
+                
+    //             // Map LogMessages to Strings, extracting only the message or any other desired info
+    //             List<String> logMessages = controllerLogs.stream()
+    //                                                     .map(log -> "Timestamp: " + log.getTimestamp() + " | " + log.getMessage())
+    //                                                     .collect(Collectors.toList());
+
+    //             // If there are new logs, send them to the client via SSE
+    //             if (!logMessages.isEmpty()) {
+    //                 // Join the logs into a single string, one per line, with each log prefixed by "data:"
+    //                 String response = logMessages.stream()
+    //                                             .map(log -> "data: " + log + "\n\n") // Format as SSE event
+    //                                             .collect(Collectors.joining());
+    //                 os.write(response.getBytes());
+    //                 os.flush();
+    //             }
+
+    //             // Sleep for a while before sending new logs (simulate waiting for new logs)
+    //             try {
+    //                 Thread.sleep(5000); // Wait for 5 seconds before sending new data
+    //             } catch (InterruptedException e) {
+    //                 Thread.currentThread().interrupt();
+    //             }
+    //         }
+    //     }
+    // }
 }
+
+// public void consume(String topic) {
+// // Step 1: Check if the controller is ready
+// if (!waitForReadiness()) {
+// System.err.println("Controller not ready. Exiting consume operation.");
+// return;
+// }
+
+// // Step 2: Wait for at least one active broker
+// if (!checkActiveBrokers()) {
+// System.err.println("No active brokers available. Exiting consume
+// operation.");
+// return;
+// }
+
+// long lastOffset = 0; // Start from the beginning of the partition
+// while (true) {
+// try {
+// // Step 3: Fetch metadata for the topic
+// Map<Integer, PartitionMetadata> topicMetadata =
+// fetchMetadataWithRetries(topic);
+// if (topicMetadata == null) {
+// System.err.println("Topic metadata not found for topic " + topic);
+// Thread.sleep(5000); // Retry after delay
+// continue;
+// }
+
+// boolean success = false;
+
+// // Try fetching messages from any available partition
+// for (Map.Entry<Integer, PartitionMetadata> entry : topicMetadata.entrySet())
+// {
+// int partitionId = entry.getKey();
+// PartitionMetadata partitionMetadata = entry.getValue();
+
+// // Step 4: Attempt to fetch messages from the leader broker
+// success = fetchMessagesFromBroker(partitionMetadata, topic, partitionId,
+// lastOffset);
+// if (!success) {
+// // If leader fails, try the followers
+// List<Integer> followers = partitionMetadata.getFollowerIds();
+// for (int followerId : followers) {
+// BrokerInfo followerInfo = fetchBrokerInfo(followerId);
+// if (followerInfo != null) {
+// System.out.println("Attempting to consume from follower broker: " +
+// followerInfo.getHost());
+// success = fetchMessages(followerInfo, topic, partitionId, lastOffset);
+// if (success) {
+// break; // Exit the loop if successful
+// }
+// }
+// }
+// }
+
+// // If successful, refresh metadata for leadership changes
+// if (success) {
+// fetchMetadataWithRetries(topic);
+// Thread.sleep(5000); // Retry after delay
+// }
+// }
+
+// // Step 5: Monitor active brokers
+// if (!checkActiveBrokers()) {
+// System.err.println("Active broker count dropped to zero. Halting
+// consumption.");
+// while (!checkActiveBrokers()) {
+// System.out.println("Waiting for active brokers...");
+// Thread.sleep(5000);
+// }
+// System.out.println("Active brokers restored. Resuming consumption.");
+// }
+
+// } catch (Exception e) {
+// System.err.println("Error during consumption: " + e.getMessage());
+// e.printStackTrace();
+// try {
+// Thread.sleep(5000); // Retry after delay
+// } catch (InterruptedException ie) {
+// Thread.currentThread().interrupt();
+// }
+// }
+// }
+// }
+
+// // Method to check if at least one active broker is available
+// private boolean checkActiveBrokers() {
+// int maxRetries = 5; // Maximum number of retries
+// int retryDelay = 10000; // Delay in milliseconds between retries (10 seconds)
+
+// for (int attempt = 1; attempt <= maxRetries; attempt++) {
+// try {
+// URL url = new URL("http://localhost:8090/brokers/active/count");
+// HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+// connection.setRequestMethod("GET");
+// connection.setConnectTimeout(5000); // Set connection timeout (5 seconds)
+// connection.setReadTimeout(5000); // Set read timeout (5 seconds)
+
+// // Check if the connection is successful
+// int responseCode = connection.getResponseCode();
+// if (responseCode == HttpURLConnection.HTTP_OK) {
+// // Read and parse the response
+// BufferedReader reader = new BufferedReader(new
+// InputStreamReader(connection.getInputStream()));
+// StringBuilder response = new StringBuilder();
+// String line;
+// while ((line = reader.readLine()) != null) {
+// response.append(line);
+// }
+// reader.close();
+
+// // Parse the JSON response
+// JsonObject jsonResponse =
+// JsonParser.parseString(response.toString()).getAsJsonObject();
+// int activeBrokerCount = jsonResponse.get("activeBrokerCount").getAsInt();
+
+// // If the count of active brokers is greater than 0, return true
+// return activeBrokerCount > 0;
+// } else {
+// System.err.println("Error: Received HTTP " + responseCode + " while
+// connecting to broker count endpoint.");
+// }
+// } catch (IOException e) {
+// System.err.println("Attempt " + attempt + " failed: IOException while
+// checking active brokers: " + e.getMessage());
+// e.printStackTrace();
+// }
+
+// // If the connection failed, wait for the retry delay before retrying
+// if (attempt < maxRetries) {
+// System.out.println("Retrying in " + retryDelay / 1000 + " seconds...");
+// try {
+// Thread.sleep(retryDelay); // Wait for the specified delay before retrying
+// } catch (InterruptedException ie) {
+// System.err.println("Retry delay interrupted: " + ie.getMessage());
+// }
+// }
+// }
+
+// // If we reach here, the maximum number of retries has been exhausted
+// System.err.println("Failed to check active brokers after " + maxRetries + "
+// attempts.");
+// return false;
+// }
+
+// private boolean fetchMessagesFromBroker(PartitionMetadata partitionMetadata,
+// String topic, int partitionId, long lastOffset) {
+// BrokerInfo leaderInfo = fetchBrokerInfo(partitionMetadata.getLeaderId());
+// if (leaderInfo == null) {
+// System.err.println("Leader broker info not found for broker ID " +
+// partitionMetadata.getLeaderId());
+// return false; // Leader broker info unavailable
+// }
+// return fetchMessages(leaderInfo, topic, partitionId, lastOffset);
+// }
+
+// private boolean fetchMessages(BrokerInfo brokerInfo, String topic, int
+// partitionId, long lastOffset) {
+// try {
+// // Construct the URL for long-polling from the broker
+// URL url = new URL("http://" + brokerInfo.getHost() + ":" +
+// brokerInfo.getPort()
+// + "/longPolling?topicName=" + topic + "&partitionId=" + partitionId
+// + "&offset=" + lastOffset);
+
+// HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+// conn.setRequestMethod("GET");
+// conn.setConnectTimeout(10000); // 10 seconds timeout for connection
+// conn.setReadTimeout(30000); // 30 seconds timeout for reading
+
+// int responseCode = conn.getResponseCode();
+// if (responseCode == 200) {
+// BufferedReader in = new BufferedReader(new
+// InputStreamReader(conn.getInputStream()));
+// String response = in.readLine();
+// in.close();
+
+// // Deserialize and process the messages
+// Gson gson = new GsonBuilder()
+// .registerTypeAdapter(Message.class, new MessageAdapter())
+// .create();
+// List<Message> messages = gson.fromJson(response, new
+// TypeToken<List<Message>>() {}.getType());
+
+// if (messages == null || messages.isEmpty()) {
+// System.out.println("No new messages available in Partition " + partitionId);
+// return true; // No new messages, but no error
+// }
+
+// // Ensure messages are sorted by offset (ascending order)
+// messages.sort(Comparator.comparingLong(Message::getOffset));
+// for (Message message : messages) {
+// // Generate a composite key for the message
+// String messageKey = generateMessageKey(message);
+
+// // Process only if the message is not a duplicate
+// if (consumedMessageKeys.add(messageKey)) {
+// System.out.println("Consumed message from Partition " + partitionId + ": "
+// + new String(message.getPayload()));
+// lastOffset = message.getOffset() + 1; // Update the offset after processing
+// } else {
+// //System.out.println("Duplicate message skipped: " + messageKey);
+// }
+// }
+// return true; // Successfully consumed messages
+// } else {
+// System.err.println("Failed to fetch messages from Partition " + partitionId +
+// ". Response Code: "
+// + responseCode);
+// return false; // Failed to fetch messages
+// }
+// } catch (IOException e) {
+// System.err.println("Error while fetching messages from broker " +
+// brokerInfo.getHost() + ":"
+// + brokerInfo.getPort() + " for Partition " + partitionId + ": " +
+// e.getMessage());
+// return false; // If an error occurs, return false
+// }
+// }
+
+// // Helper method to generate a composite key
+// private String generateMessageKey(Message message) {
+// return message.getTopic() + "|" + message.getPartition() + "|" +
+// message.getOffset() + "|"
+// + message.getTimestamp();
+// }
 
 /*
  * 
@@ -349,7 +656,7 @@ public class Consumer {
 
 // public void consume(String topic) {
 // // Wait for the controller and metadata to be ready
-// if (!waitForReadiness()) {
+// if (!checkInitialReadiness()) {
 // System.err.println("Controller not ready. Exiting consume operation.");
 // return;
 // }
@@ -493,85 +800,89 @@ public class Consumer {
 // }
 
 // private boolean checkInitialReadiness() {
-//     // Wait for at least one active broker
-//     int retries = 5; // Number of retries to check readiness
-//     while (retries > 0) {
-//         try {
-//             List<BrokerInfo> activeBrokers = fetchActiveBrokers();
-//             if (activeBrokers.size() > 0) {
-//                 System.out.println("At least one active broker is ready. Proceeding with consumption.");
-//                 return true;
-//             } else {
-//                 System.out.println("No active brokers available. Retrying...");
-//                 Thread.sleep(5000); // Wait before retrying
-//                 retries--;
-//             }
-//         } catch (IOException e) {
-//             System.err.println("Error checking readiness: " + e.getMessage());
-//         } catch (InterruptedException e) {
-//             // TODO Auto-generated catch block
-//             e.printStackTrace();
-//         }
-//     }
-//     System.err.println("Failed to detect broker readiness after retries.");
-//     return false;
+// // Wait for at least one active broker
+// int retries = 5; // Number of retries to check readiness
+// while (retries > 0) {
+// try {
+// List<BrokerInfo> activeBrokers = fetchActiveBrokers();
+// if (activeBrokers.size() > 0) {
+// System.out.println("At least one active broker is ready. Proceeding with
+// consumption.");
+// return true;
+// } else {
+// System.out.println("No active brokers available. Retrying...");
+// Thread.sleep(5000); // Wait before retrying
+// retries--;
+// }
+// } catch (IOException e) {
+// System.err.println("Error checking readiness: " + e.getMessage());
+// } catch (InterruptedException e) {
+// e.printStackTrace();
+// }
+// }
+// System.err.println("Failed to detect broker readiness after retries.");
+// return false;
 // }
 
 // // Fetch active brokers from the Controller endpoint
 // public List<BrokerInfo> fetchActiveBrokers() throws IOException {
-//     HttpURLConnection connection = null;
-//     BufferedReader reader = null;
-//     int maxRetries = 3; // Max retries
-//     int retryDelayMs = 2000; // Delay between retries (in milliseconds)
+// HttpURLConnection connection = null;
+// BufferedReader reader = null;
+// int maxRetries = 3; // Max retries
+// int retryDelayMs = 2000; // Delay between retries (in milliseconds)
 
-//     for (int attempt = 1; attempt <= maxRetries; attempt++) {
-//         try {
-//             // Try to establish a connection
-//             URL url = new URL(BROKER_API_URL);
-//             connection = (HttpURLConnection) url.openConnection();
-//             connection.setRequestMethod("GET");
-//             connection.setRequestProperty("Accept", "application/json");
+// for (int attempt = 1; attempt <= maxRetries; attempt++) {
+// try {
+// // Try to establish a connection
+// URL url = new URL(BROKER_API_URL);
+// connection = (HttpURLConnection) url.openConnection();
+// connection.setRequestMethod("GET");
+// connection.setRequestProperty("Accept", "application/json");
 
-//             // Read the response
-//             reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
-//             StringBuilder response = new StringBuilder();
-//             String line;
+// // Read the response
+// reader = new BufferedReader(new
+// InputStreamReader(connection.getInputStream()));
+// StringBuilder response = new StringBuilder();
+// String line;
 
-//             while ((line = reader.readLine()) != null) {
-//                 response.append(line);
-//             }
+// while ((line = reader.readLine()) != null) {
+// response.append(line);
+// }
 
-//             // Convert the response JSON to a list of BrokerInfo objects
-//             Gson gson = new Gson();
-//             BrokerInfo[] brokersArray = gson.fromJson(response.toString(), BrokerInfo[].class);
-//             return List.of(brokersArray); // Convert array to list
+// // Convert the response JSON to a list of BrokerInfo objects
+// Gson gson = new Gson();
+// BrokerInfo[] brokersArray = gson.fromJson(response.toString(),
+// BrokerInfo[].class);
+// return List.of(brokersArray); // Convert array to list
 
-//         } catch (IOException e) {
-//             // If this is the last attempt, rethrow the exception
-//             if (attempt == maxRetries) {
-//                 e.printStackTrace();
-//                 throw new IOException(
-//                         "Error fetching active brokers from the endpoint after " + maxRetries + " attempts.");
-//             }
+// } catch (IOException e) {
+// // If this is the last attempt, rethrow the exception
+// if (attempt == maxRetries) {
+// e.printStackTrace();
+// throw new IOException(
+// "Error fetching active brokers from the endpoint after " + maxRetries + "
+// attempts.");
+// }
 
-//             // Otherwise, log the error and retry after a delay
-//             System.out.println("Attempt " + attempt + " failed. Retrying in " + retryDelayMs + " ms...");
-//             try {
-//                 TimeUnit.MILLISECONDS.sleep(retryDelayMs); // Delay before retry
-//             } catch (InterruptedException ie) {
-//                 Thread.currentThread().interrupt(); // Restore interrupt status
-//             }
+// // Otherwise, log the error and retry after a delay
+// System.out.println("Attempt " + attempt + " failed. Retrying in " +
+// retryDelayMs + " ms...");
+// try {
+// TimeUnit.MILLISECONDS.sleep(retryDelayMs); // Delay before retry
+// } catch (InterruptedException ie) {
+// Thread.currentThread().interrupt(); // Restore interrupt status
+// }
 
-//         } finally {
-//             if (reader != null) {
-//                 reader.close();
-//             }
-//             if (connection != null) {
-//                 connection.disconnect();
-//             }
-//         }
-//     }
+// } finally {
+// if (reader != null) {
+// reader.close();
+// }
+// if (connection != null) {
+// connection.disconnect();
+// }
+// }
+// }
 
-//     // Return empty list if all retries fail (just in case)
-//     return List.of();
+// // Return empty list if all retries fail (just in case)
+// return List.of();
 // }
