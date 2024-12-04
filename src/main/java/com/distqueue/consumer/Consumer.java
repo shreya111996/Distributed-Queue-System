@@ -35,7 +35,7 @@ public class Consumer {
                                                                                    // composite keys
     // private static final String BROKER_API_URL =
     // "http://localhost:8090/brokers/active"; // Change URL if necessary
-
+    private static final int LOG_RATE_CONTROL = 25;
     private int messageCount = 0; // Counter for messages consumed
     private long startTime = System.currentTimeMillis(); // Start time for throughput calculation
     private long totalLatency = 0; // Total latency for calculating average latency
@@ -393,8 +393,10 @@ public class Consumer {
         long elapsedTime = currentTime - startTime;
         if (elapsedTime > 0) {
             double throughput = (messageCount * 1000.0) / elapsedTime; // Messages per second
-            String logMessage = "Throughput: " + throughput + " messages/second";
-            LogRepository.addLog("Consumer", logMessage);
+            if (messageCount % LOG_RATE_CONTROL == 1) {
+                String logMessage = "Throughput: " + throughput + " messages/second";
+                LogRepository.addLog("Consumer", logMessage);
+            }
         }
     }
 
@@ -406,8 +408,10 @@ public class Consumer {
 
     private void logAverageLatency() {
         double averageLatency = totalLatency / (double) messageCount;
-        String logMessage = "Average End-to-End Latency: " + averageLatency + " ms";
-        LogRepository.addLog("Controller", logMessage);
+        if (messageCount % LOG_RATE_CONTROL == 1) {
+            String logMessage = "Average End-to-End Latency: " + averageLatency + " ms";
+            LogRepository.addLog("Controller", logMessage);
+        }
     }
 
 

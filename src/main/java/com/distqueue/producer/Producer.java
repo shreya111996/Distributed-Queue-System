@@ -4,6 +4,7 @@ import com.distqueue.core.Message;
 import com.distqueue.logging.LogMessage;
 import com.distqueue.logging.LogRepository;
 import com.distqueue.metadata.PartitionMetadata;
+import com.distqueue.producer.Producer.BrokerInfo;
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
 
@@ -26,6 +27,7 @@ import com.sun.net.httpserver.HttpExchange;
 
 public class Producer {
 
+    private static final int LOG_RATE_CONTROL = 25;
     private final String controllerHost;
     private final int controllerPort;
     
@@ -145,6 +147,7 @@ public class Producer {
         publishMessage(leaderInfo, message);
         logLatency(productionTimestamp); // Log latency
         logThroughput(); // Log throughput
+
     }
 
     private long getNextOffset(String topic, int partition) {
@@ -328,8 +331,10 @@ public class Producer {
         long elapsedTime = currentTime - startTime;
         if (elapsedTime > 0) {
             double throughput = (messageCount * 1000.0) / elapsedTime; // Messages per second
-            String logMessage = "Throughput: " + throughput + " messages/second";
-           log(logMessage);
+            if (messageCount % LOG_RATE_CONTROL == 1) {
+                String logMessage = "Throughput: " + throughput + " messages/second";
+                log(logMessage);
+            }
         }
     }
 
@@ -338,8 +343,10 @@ public class Producer {
         long latency = consumptionTimestamp - productionTimestamp;
         totalLatency += latency;
         double averageLatency = totalLatency / (double) messageCount;
-        String logMessage = "End-to-End Latency: " + latency + " ms (Average: " + averageLatency + " ms)";
-        log(logMessage);
+        if (messageCount % LOG_RATE_CONTROL == 1) {
+            String logMessage = "End-to-End Latency: " + latency + " ms (Average: " + averageLatency + " ms)";
+            log(logMessage);
+        }
     }
 
     // class ProducerLogsStreamHandler implements HttpHandler {
