@@ -190,7 +190,7 @@ public class Consumer {
                 BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
                 String response = in.readLine();
                 in.close();
-
+                messageCount++;
                 // Deserialize and process the messages
                 Gson gson = new GsonBuilder()
                         .registerTypeAdapter(Message.class, new MessageAdapter())

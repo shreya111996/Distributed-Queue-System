@@ -207,7 +207,7 @@ public class Producer {
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 // log("Message sent successfully to broker " + leaderInfo.getHost());
-
+                messageCount++;
             } else {
                 log("Failed to send message, response code: " + responseCode);
             }
