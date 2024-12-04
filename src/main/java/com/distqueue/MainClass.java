@@ -88,6 +88,21 @@ public class MainClass {
                     consumer1Thread.join();
                     consumer2Thread.join();
                     consumer3Thread.join();
+                    
+                    // After threads finish, you can interrupt them if needed (but only if they are still running)
+                    if (consumer1Thread.isAlive()) {
+                        consumer1Thread.interrupt();
+                    }
+                    if (consumer2Thread.isAlive()) {
+                        consumer2Thread.interrupt();
+                    }
+                    if (consumer3Thread.isAlive()) {
+                        consumer3Thread.interrupt();
+                    }
+
+                    // Log throughput and latency after all consumers finish
+                    consumer.logThroughput();
+                    consumer.logAverageLatency();
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
