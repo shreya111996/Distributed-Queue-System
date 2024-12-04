@@ -13,4 +13,6 @@ ENV CONTROLLER_HOST=controller
 ENV CONTROLLER_PORT=8090
 ENV JAVA_OPTS=""
 
+EXPOSE 8082
+
 ENTRYPOINT ["/app/wait-for-it.sh", "controller", "8090", "sh", "-c", "java $JAVA_OPTS -jar /app/producer-application.jar"]

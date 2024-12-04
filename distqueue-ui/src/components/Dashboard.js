@@ -20,6 +20,16 @@ const Dashboard = () => {
     { id: 3, name: 'Broker 3', url: 'http://localhost:8087/health' },
   ];
 
+  // For polling
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      fetchLogs('http://localhost:8082/logs', setProducerLogs);
+      fetchLogs('http://localhost:8083/logs', setConsumerLogs);
+    }, 5000); // Fetch every 5 seconds
+  
+    return () => clearInterval(intervalId);
+  }, []);
+
   // Fetch leader for a specific topic
   const fetchLeaderForTopic = async (topic) => {
     try {
@@ -83,8 +93,8 @@ const Dashboard = () => {
   const fetchAllLogs = () => {
     fetchLogs('http://localhost:8090/logs/controller/stream', setControllerLogs);
     fetchLogs('http://localhost:8090/logs/broker/stream', setBrokerLogs);
-    // fetchLogs('http://localhost:8090/logs/producer', setProducerLogs);
-    // fetchLogs('http://localhost:8090/logs/consumer', setConsumerLogs);
+    fetchLogs('http://localhost:8082/logs/producer', setProducerLogs);
+    fetchLogs('http://localhost:8083/logs/consumer', setConsumerLogs);
   };
 
   const fetchBrokers = async () => {
@@ -202,13 +212,13 @@ const Dashboard = () => {
           <h2>Producer Logs</h2>
           <ul>
             {producerLogs.map((log, index) => (
-              <li key={index}>{log.message}</li>
+              <li key={index}>{log}</li>
             ))}
           </ul>
           <h2>Consumer Logs</h2>
           <ul>
             {consumerLogs.map((log, index) => (
-              <li key={index}>{log.message}</li>
+              <li key={index}>{log}</li>
             ))}
           </ul>
         </div>

@@ -10,22 +10,25 @@ import com.google.gson.reflect.TypeToken;
 import java.io.*;
 import java.lang.reflect.Type;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
 import java.util.stream.Collectors;
 
-import org.springframework.http.server.reactive.HttpHandler;
-import org.springframework.http.server.reactive.ServerHttpRequest;
-import org.springframework.http.server.reactive.ServerHttpResponse;
-import org.springframework.web.service.annotation.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+import com.sun.net.httpserver.HttpHandler;
+import com.sun.net.httpserver.HttpExchange;
 
 public class Producer {
 
     private final String controllerHost;
     private final int controllerPort;
+    
     private Map<String, Integer> partitionCounter = new ConcurrentHashMap<>(); // track the current partition for
                                                                                // round-robin
     private Map<String, Map<Integer, Long>> partitionOffsetMap = new ConcurrentHashMap<>(); // track the current offset
@@ -34,15 +37,63 @@ public class Producer {
     private long startTime = System.currentTimeMillis(); // Start time for throughput calculation
     private long totalLatency = 0; // Total latency for calculating average latency
 
+    private static final List<String> logMessages = new ArrayList<>();
+    
     public Producer(String controllerHost, int controllerPort) {
         this.controllerHost = controllerHost;
         this.controllerPort = controllerPort;
     }
 
+    public static void main(String[] args) {
+        String controllerHost = System.getenv("CONTROLLER_HOST");
+        int controllerPort = Integer.parseInt(System.getenv("CONTROLLER_PORT"));
+        Producer producer = new Producer(controllerHost, controllerPort);
+
+        // Start the HTTP server
+        startHttpServer();
+
+        // Send messages or perform other actions
+        producer.createTopic("TestTopic", 3, 1);
+        producer.send("TestTopic", "Hello, World!".getBytes());
+    }
+
+    private static void startHttpServer() {
+        try {
+            int port = 8082; // Choose an available port for the producer
+            HttpServer server = HttpServer.create(new InetSocketAddress(port), 0);
+            server.createContext("/logs", new LogsHandler());
+            server.setExecutor(Executors.newCachedThreadPool());
+            server.start();
+            System.out.println("Producer HTTP server started on port " + port);
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Handler to serve logs
+    static class LogsHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            String response = String.join("\n", logMessages);
+            exchange.sendResponseHeaders(200, response.getBytes().length);
+            OutputStream os = exchange.getResponseBody();
+            os.write(response.getBytes());
+            os.close();
+        }
+    }
+
+    // Modify your logging methods to add logs to logMessages
+    private void log(String message) {
+        System.out.println(message);
+        synchronized (logMessages) {
+            logMessages.add(message);
+        }
+    }
+
     public void send(String topic, byte[] payload) {
         // Ensure the controller and brokers are ready
         if (!waitForReadiness()) {
-            System.err.println("Controller or brokers are not ready. Aborting send operation.");
+            log("Controller or brokers are not ready. Aborting send operation.");
             return;
         }
 
@@ -56,19 +107,19 @@ public class Producer {
             if (topicMetadata != null)
                 break;
 
-            System.err.println("Retrying to fetch metadata... Attempt " + (i + 1));
+            log("Retrying to fetch metadata... Attempt " + (i + 1));
             try {
                 Thread.sleep(delay);
                 delay *= 2; // Exponential backoff
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                System.err.println("Retry interrupted.");
+                log("Retry interrupted.");
                 return;
             }
         }
 
         if (topicMetadata == null) {
-            System.err.println("Failed to fetch metadata after multiple attempts. Aborting send operation.");
+            log("Failed to fetch metadata after multiple attempts. Aborting send operation.");
             return;
         }
 
@@ -78,21 +129,21 @@ public class Producer {
 
         PartitionMetadata partitionMetadata = topicMetadata.get(partitionId);
         if (partitionMetadata == null) {
-            // System.err.println("No metadata found for partition " + partitionId);
+            // log("No metadata found for partition " + partitionId);
             return;
         }
 
         int leaderId = partitionMetadata.getLeaderId();
         BrokerInfo leaderInfo = fetchBrokerInfo(leaderId);
         if (leaderInfo == null) {
-            System.err.println("Leader broker info not found for broker ID " + leaderId);
+            log("Leader broker info not found for broker ID " + leaderId);
             return;
         }
 
         long offset = getNextOffset(topic, partitionId);
         long productionTimestamp = System.currentTimeMillis();
         Message message = new Message(topic, partitionId, offset, payload);
-        // System.out.println("Sending message to topic " + topic + ", partition " + partitionId + ", offset " + offset);
+        // log("Sending message to topic " + topic + ", partition " + partitionId + ", offset " + offset);
         publishMessage(leaderInfo, message);
         logLatency(productionTimestamp); // Log latency
         logThroughput(); // Log throughput
@@ -130,16 +181,16 @@ public class Producer {
             if (isControllerReady()) {
                 return true;
             }
-            //System.out.println("Controller not ready. Retrying in " + (delay / 1000) + " seconds...");
+            //log("Controller not ready. Retrying in " + (delay / 1000) + " seconds...");
             try {
                 Thread.sleep(delay);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                System.err.println("Readiness check interrupted.");
+                log("Readiness check interrupted.");
                 return false;
             }
         }
-        System.err.println("Controller did not become ready after multiple attempts.");
+        log("Controller did not become ready after multiple attempts.");
         return false;
     }
 
@@ -157,13 +208,13 @@ public class Producer {
 
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
-                // System.out.println("Message sent successfully to broker " + leaderInfo.getHost());
+                // log("Message sent successfully to broker " + leaderInfo.getHost());
 
             } else {
-                System.err.println("Failed to send message, response code: " + responseCode);
+                log("Failed to send message, response code: " + responseCode);
             }
         } catch (IOException e) {
-            System.err.println("Error publishing message: " + e.getMessage());
+            log("Error publishing message: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -179,18 +230,18 @@ public class Producer {
             int responseCode = conn.getResponseCode();
             if (responseCode == 200) {
                 // Controller is ready
-                // System.out.println("Controller is ready.");
+                // log("Controller is ready.");
                 return true;
             }
             else if (responseCode == 503) {
             // Controller is not ready
-            // System.out.println("Controller is not ready.");
+            // log("Controller is not ready.");
             }
             else {
-                System.err.println("Unexpected response code from readiness check: " + responseCode);
+                log("Unexpected response code from readiness check: " + responseCode);
             }
         } catch (IOException e) {
-            System.err.println("Error checking controller readiness: " + e.getMessage());
+            log("Error checking controller readiness: " + e.getMessage());
             e.printStackTrace();
         }
         return false;
@@ -213,10 +264,10 @@ public class Producer {
                     return gson.fromJson(response, mapType);
                 }
             } else {
-                // System.err.println("Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
+                // log("Failed to fetch metadata for topic " + topicName + ", response code: " + responseCode);
             }
         } catch (IOException e) {
-            System.err.println("Error fetching metadata for topic " + topicName + ": " + e.getMessage());
+            log("Error fetching metadata for topic " + topicName + ": " + e.getMessage());
             e.printStackTrace();
         }
         return null;
@@ -239,10 +290,10 @@ public class Producer {
                     }
                 }
             } else {
-                System.err.println("Failed to fetch broker info for broker ID " + brokerId);
+                log("Failed to fetch broker info for broker ID " + brokerId);
             }
         } catch (IOException e) {
-            System.err.println("Error fetching broker info: " + e.getMessage());
+            log("Error fetching broker info: " + e.getMessage());
             e.printStackTrace();
         }
         return null;
@@ -264,12 +315,12 @@ public class Producer {
             }
 
             if (conn.getResponseCode() == 200) {
-                System.out.println("Topic " + topicName + " created successfully.");
+                log("Topic " + topicName + " created successfully.");
             } else {
-                System.err.println("Failed to create topic " + topicName);
+                log("Failed to create topic " + topicName);
             }
         } catch (IOException e) {
-            System.err.println("Error creating topic: " + e.getMessage());
+            log("Error creating topic: " + e.getMessage());
             e.printStackTrace();
         }
     }

@@ -79,6 +79,8 @@ services:
   producer:
     image: distqueue/producer
     container_name: producer
+    ports:
+      - "8082:8082"
     environment:
       - ROLE=producer
       - CONTROLLER_HOST=controller
@@ -91,6 +93,8 @@ services:
   consumer:
     image: distqueue/consumer
     container_name: consumer
+    ports:
+      - "8083:8083"
     environment:
       - ROLE=consumer
       - CONTROLLER_HOST=controller
