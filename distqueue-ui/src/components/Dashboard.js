@@ -93,8 +93,8 @@ const Dashboard = () => {
   const fetchAllLogs = () => {
     fetchLogs('http://localhost:8090/logs/controller/stream', setControllerLogs);
     fetchLogs('http://localhost:8090/logs/broker/stream', setBrokerLogs);
-    fetchLogs('http://localhost:8082/logs/producer', setProducerLogs);
-    fetchLogs('http://localhost:8083/logs/consumer', setConsumerLogs);
+    fetchLogs('http://localhost:8082/logs', setProducerLogs);
+    fetchLogs('http://localhost:8083/logs', setConsumerLogs);
   };
 
   const fetchBrokers = async () => {

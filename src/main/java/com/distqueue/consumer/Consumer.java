@@ -45,17 +45,8 @@ public class Consumer {
     public Consumer(String controllerHost, int controllerPort) {
         this.controllerHost = controllerHost;
         this.controllerPort = controllerPort;
-    }
-    public static void main(String[] args) {
-        String controllerHost = System.getenv("CONTROLLER_HOST");
-        int controllerPort = Integer.parseInt(System.getenv("CONTROLLER_PORT"));
-        Consumer consumer = new Consumer(controllerHost, controllerPort);
-
         // Start the HTTP server
         startHttpServer();
-
-        // Consume messages or perform other actions
-        consumer.consume("TestTopic");
     }
 
     private static void startHttpServer() {
@@ -73,12 +64,21 @@ public class Consumer {
 
     // Handler to serve logs
     static class LogsHandler implements HttpHandler {
+        private static final Gson gson = new Gson();
+
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            String response = String.join("\n", logMessages);
-            exchange.sendResponseHeaders(200, response.getBytes().length);
+            // Add CORS headers
+            exchange.getResponseHeaders().add("Access-Control-Allow-Origin", "*");
+            exchange.getResponseHeaders().add("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    
+            // Convert log messages to JSON
+            String jsonResponse = gson.toJson(logMessages);
+    
+            // Send the response
+            exchange.sendResponseHeaders(200, jsonResponse.getBytes().length);
             OutputStream os = exchange.getResponseBody();
-            os.write(response.getBytes());
+            os.write(jsonResponse.getBytes());
             os.close();
         }
     }
